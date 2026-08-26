@@ -1,0 +1,90 @@
+# macOS and editor metadata
+.DS_Store
+._*
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.swp
+*.swo
+*~
+
+# Java, Gradle, Maven, and generated output
+.gradle/
+**/build/
+**/target/
+out/
+*.class
+*.jar
+*.war
+*.ear
+!gradle/wrapper/gradle-wrapper.jar
+
+# Test, coverage, profiling, and benchmark output
+coverage/
+test-results/
+benchmark-results/local/
+*.exec
+*.hprof
+*.jfr
+*.prof
+
+# Logs, temporary files, and local runtime state
+*.log
+logs/
+tmp/
+temp/
+.cache/
+.local/
+runtime-data/
+volumes/
+prometheus-data/
+grafana-data/
+kafka-data/
+postgres-data/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+.secrets/
+*.secret.yaml
+*.secrets.yaml
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+kubeconfig
+kubeconfig.*
+.kube/
+
+# Terraform local state and generated plans
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Local Kubernetes and Helm artifacts
+.kind/
+.helm/
+charts/*.tgz
+rendered-manifests/
+
+# Docker Compose developer overrides
+compose.override.yaml
+compose.override.yml
+docker-compose.override.yaml
+docker-compose.override.yml
+
+# Tool-specific local files
+.tool-versions.local
+.sdkmanrc.local
