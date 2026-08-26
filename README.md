@@ -55,9 +55,10 @@ The first release will use Java, Kubernetes, Docker, Helm, Argo CD, Argo Rollout
 
 Spinnaker, Cassandra, Redis, AWS/EKS, GraphQL, a custom web UI, and AI-assisted diagnosis are explicitly deferred. Adding overlapping infrastructure before the core control loop is reliable would make the project broader but weaker.
 
-## Plan
+## Specification and plan
 
-The complete design, milestones, test strategy, failure matrix, benchmark protocol, release gates, and evidence rules are in [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md).
+- [spec.md](spec.md) is the normative v1 contract: APIs, ownership, reconciliation, gate decisions, failure semantics, security, and acceptance scenarios.
+- [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md) defines the implementation roadmap, benchmarks, release gates, and evidence rules.
 
 ## License
 

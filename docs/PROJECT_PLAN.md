@@ -1,5 +1,7 @@
 # ReleaseGuard project plan
 
+The normative v1 API and behavior contract is [spec.md](../spec.md). This document defines sequencing, evidence, and release execution.
+
 ## 1. Project thesis
 
 ReleaseGuard will be a Kubernetes-native progressive-delivery control plane that turns a constrained deployment DSL into auditable, metric-gated rollouts.
@@ -157,17 +159,36 @@ Generated CRDs, the Gradle wrapper, Terraform lock files, Helm lock files, and r
 
 ### 8.1 ReleasePlan
 
-`ReleasePlan` is the developer-facing desired state.
+`ReleasePlan` is the long-lived developer-facing desired state for one application in one namespace. Updating its pod template creates a new release generation.
 
 ```yaml
 apiVersion: delivery.weihantu.dev/v1alpha1
 kind: ReleasePlan
 metadata:
-  name: checkout-v2
+  name: checkout
   namespace: demo
 spec:
-  applicationRef: checkout
-  image: ghcr.io/weihantu/checkout@sha256:replace-me
+  workload:
+    replicas: 10
+    managedContainer: app
+    podTemplate:
+      metadata:
+        labels:
+          app.kubernetes.io/name: checkout
+      spec:
+        containers:
+          - name: app
+            image: ghcr.io/weihantu/checkout@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+            ports:
+              - name: http
+                containerPort: 8080
+  network:
+    servicePort: 80
+    targetPort: http
+    ingress:
+      className: nginx
+      host: checkout.releaseguard.local
+      path: /
   rollout:
     steps:
       - weight: 5
@@ -263,17 +284,20 @@ A crash after Kafka accepts an event but before status is updated can publish a 
 stateDiagram-v2
     [*] --> Pending
     Pending --> Validating
-    Validating --> Progressing: valid plan
+    Validating --> Bootstrapping: no stable revision
+    Validating --> Progressing: stable revision exists
     Validating --> Failed: invalid dependency
+    Bootstrapping --> Succeeded: ready and absolute gate passed
+    Bootstrapping --> Failed: readiness or absolute gate failed
     Progressing --> Paused: inconclusive or manual pause
     Paused --> Progressing: approved resume
     Progressing --> Succeeded: reached 100 percent
     Progressing --> RollingBack: failed gate or abort
     RollingBack --> RolledBack: stable restored
     RollingBack --> Failed: rollback deadline exceeded
-    Succeeded --> [*]
-    RolledBack --> [*]
-    Failed --> [*]
+    Succeeded --> Validating: newer admitted generation
+    RolledBack --> Validating: newer admitted generation
+    Failed --> Validating: corrected newer generation
 ```
 
 ### Reconciliation invariants
@@ -316,7 +340,8 @@ For each evaluation it receives:
 - stable and canary revision labels;
 - policy reference and thresholds;
 - analysis start/end time;
-- prior consecutive-pass/failure state.
+
+The gate service is stateless for a single evaluation. Generated Argo AnalysisRun configuration owns consecutive-success and consecutive-failure counting.
 
 It returns:
 
