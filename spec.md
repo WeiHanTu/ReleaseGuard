@@ -345,6 +345,8 @@ spec:
   type: Abort
   reason: "Error budget exhausted during incident INC-42"
   idempotencyKey: "7cc18a92-..."
+  actor: "operator@example.com"
+  requestedAt: "2026-08-26T21:00:00Z"
 ```
 
 Supported action types:

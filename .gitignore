@@ -29,6 +29,7 @@ benchmark-results/local/
 *.hprof
 *.jfr
 *.prof
+.jqwik-database
 
 # Logs, temporary files, and local runtime state
 *.log

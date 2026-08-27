@@ -1,0 +1,48 @@
+apiVersion: delivery.weihantu.dev/v1alpha1
+kind: ReleasePlan
+metadata:
+  name: checkout
+  namespace: demo
+spec:
+  workload:
+    replicas: 10
+    managedContainer: app
+    podTemplate:
+      metadata:
+        labels:
+          app.kubernetes.io/name: checkout
+      spec:
+        containers:
+          - name: app
+            image: ghcr.io/weihantu/checkout@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+            ports:
+              - name: http
+                containerPort: 8080
+  network:
+    servicePort: 80
+    targetPort: http
+    ingress:
+      className: nginx
+      host: checkout.releaseguard.local
+      path: /
+  rollout:
+    steps:
+      - weight: 5
+        duration: 2m
+      - weight: 25
+        duration: 5m
+      - weight: 50
+        duration: 5m
+      - weight: 100
+    gates:
+      - policyRef: http-error-ratio
+        maxCanaryValue: 0.01
+        maxDeltaFromStable: 0.005
+        consecutiveFailures: 3
+        consecutiveSuccesses: 2
+  failurePolicy:
+    metricUnavailable: Pause
+    gateFailed: Rollback
+    rollbackDeadline: 60s
+    auditBackpressure: PausePromotion
+  deletionPolicy: Delete

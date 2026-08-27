@@ -20,9 +20,9 @@ Installing Argo CD, Kafka, and Grafana is not sufficient. ReleaseGuard must own 
 
 ## 2. Status and evidence policy
 
-Current status: **planning only**.
+Current status: **Week 1 contracts and bootstrap implemented**.
 
-Nothing in this document is a completed result. Numbers marked as targets are acceptance criteria, not benchmark results or resume claims.
+The Java 21 multi-module build, four API models, semantic validators, deterministic CRD generation, architecture decisions, contract tests, and minimal CI are implemented. Week 2 onward remains planned. Numbers marked as targets are acceptance criteria, not benchmark results or resume claims.
 
 Evidence rules:
 
@@ -560,12 +560,12 @@ Assumption: approximately 10 to 15 focused hours per week. If time is materially
 
 ### Week 1: contracts and bootstrap
 
-- Create Gradle multi-module build and pinned Java toolchain.
-- Write ADRs for state ownership, event delivery, GitOps mutation, and Argo boundaries.
-- Implement API models, CRD generation, and validation tests.
-- Create minimal CI for formatting, compilation, and unit tests.
+- [x] Create Gradle multi-module build and pinned Java toolchain.
+- [x] Write ADRs for state ownership, event delivery, GitOps mutation, and Argo boundaries.
+- [x] Implement API models, CRD generation, and validation tests.
+- [x] Create minimal CI for formatting, compilation, and unit tests.
 
-Exit: generated CRDs and validation behavior are reproducible from a clean checkout.
+Exit achieved: `./gradlew clean check` regenerates and compares all four committed CRDs while running formatting, compilation, unit, serialization, schema, and property-based tests.
 
 ### Week 2: operator control loop
 

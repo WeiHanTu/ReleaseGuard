@@ -1,8 +1,33 @@
 # ReleaseGuard
 
-ReleaseGuard is a planned GitOps progressive-delivery control plane for Kubernetes. It will let developers describe a rollout declaratively, reconcile that desired state through a Java operator, evaluate canaries against Prometheus metrics, and retain an auditable deployment-event history in Kafka.
+ReleaseGuard is an implementation-in-progress GitOps progressive-delivery control plane for Kubernetes. Its target workflow lets developers describe a rollout declaratively, reconcile that desired state through a Java operator, evaluate canaries against Prometheus metrics, and retain an auditable deployment-event history in Kafka.
 
-> **Status:** design and planning. No implementation, performance, reliability, or production-readiness claims are made yet.
+> **Status:** Week 1 contracts and bootstrap are implemented. The operator, external integrations, deployment packaging, and operational measurements are not implemented yet. No production-readiness claim is made.
+
+## Implemented
+
+- A pinned Java 21 and Gradle 9.7.1 six-module build.
+- Fabric8 models for the namespaced `ReleasePlan`, `ReleaseAction`, and `ReleaseEvent` APIs and cluster-scoped `MetricPolicy` API.
+- Deterministic semantic validation for image digests, rollout steps, bootstrap gates, approved metric thresholds, pod security, active-release updates, actions, and outbox identity.
+- Reproducible structural CRDs with status subresources and printer columns.
+- JUnit and jqwik contract tests, formatting checks, CRD freshness verification, wrapper validation, and dependency review.
+
+## Build and verify
+
+Install JDK 21, then run:
+
+```bash
+./gradlew clean check
+```
+
+When an API model changes, deliberately refresh and review the committed schemas:
+
+```bash
+./gradlew :api-model:syncCrds
+git diff -- config/crd
+```
+
+Example resources are under [`config/examples`](config/examples), generated CRDs under [`config/crd`](config/crd), and accepted architecture decisions under [`docs/adr`](docs/adr).
 
 ## Intended capabilities
 
@@ -15,7 +40,7 @@ ReleaseGuard is a planned GitOps progressive-delivery control plane for Kubernet
 - Docker images, Helm installation, Kind-based local development, and Terraform-managed GKE deployment.
 - Reproducible failure drills, control-plane benchmarks, dashboards, runbooks, and postmortems.
 
-## Proposed architecture
+## Target architecture
 
 ```mermaid
 flowchart LR

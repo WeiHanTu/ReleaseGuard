@@ -1,0 +1,15 @@
+# Internal outbox resource. Application developers must not create this resource.
+apiVersion: delivery.weihantu.dev/v1alpha1
+kind: ReleaseEvent
+metadata:
+  name: checkout-4-000012
+  namespace: demo
+spec:
+  eventId: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  releaseId: 4f8f0000-0000-0000-0000-000000000000:4
+  sequence: 12
+  type: rollout.step.passed
+  occurredAt: "2026-08-26T21:00:01Z"
+  payload:
+    step: 1
+    weight: 25

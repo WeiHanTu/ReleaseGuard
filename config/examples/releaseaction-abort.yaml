@@ -1,0 +1,15 @@
+apiVersion: delivery.weihantu.dev/v1alpha1
+kind: ReleaseAction
+metadata:
+  generateName: checkout-abort-
+  namespace: demo
+spec:
+  target:
+    name: checkout
+    uid: 4f8f0000-0000-0000-0000-000000000000
+    generation: 4
+  type: Abort
+  reason: Error budget exhausted during incident INC-42
+  idempotencyKey: 7cc18a92-4e39-4b64-a7eb-aad83ceec223
+  actor: operator@example.com
+  requestedAt: "2026-08-26T21:00:00Z"
