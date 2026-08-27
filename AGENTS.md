@@ -14,6 +14,8 @@ Use the committed Gradle wrapper; do not rely on a system Gradle installation.
 
 This is the required local gate. Use `./gradlew :api-model:test` while iterating and `./gradlew :api-model:syncCrds` after intentional API changes; review the resulting `config/crd/` diff. Run later Kind, Helm, and cloud workflows only through committed scripts or Gradle tasks so CI and reviewers can reproduce them. Do not document commands that do not yet exist.
 
+If Python tooling is introduced, manage it with `uv`, commit `pyproject.toml` and `uv.lock`, and use `uv sync --locked`. Do not add `pip install` instructions or an unmanaged `requirements.txt`.
+
 ## Coding Style & Naming Conventions
 
 Target Java 21 and Gradle Kotlin DSL. Use four-space indentation, UTF-8, explicit imports, and no wildcard imports. Prefer immutable API models and small, deterministic functions for validation and state transitions. Use `UpperCamelCase` for types, `lowerCamelCase` for members, `UPPER_SNAKE_CASE` for constants, and kebab-case for Kubernetes resource names. Formatting and static-analysis rules configured in Gradle are authoritative.
