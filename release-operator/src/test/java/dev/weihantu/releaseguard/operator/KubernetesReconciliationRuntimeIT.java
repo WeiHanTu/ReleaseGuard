@@ -9,6 +9,8 @@ import io.fabric8.kubeapitest.junit.EnableKubeAPIServer;
 import io.fabric8.kubernetes.api.model.EndpointsBuilder;
 import io.fabric8.kubernetes.api.model.HasMetadata;
 import io.fabric8.kubernetes.api.model.NamespaceBuilder;
+import io.fabric8.kubernetes.api.model.apps.ReplicaSet;
+import io.fabric8.kubernetes.api.model.apps.ReplicaSetBuilder;
 import io.fabric8.kubernetes.api.model.networking.v1.IngressBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.fabric8.kubernetes.client.dsl.base.PatchContext;
@@ -112,7 +114,7 @@ class KubernetesReconciliationRuntimeIT {
   }
 
   @Test
-  void orphaningRetainsStableResourcesAndRemovesReleaseGuardOwnership() {
+  void orphaningRestoresArgoServiceCleanupAndRetainsOnlyStableResources() {
     String namespace = "cleanup-orphan";
     ReleasePlan plan = prepareRelease(namespace, 13);
     KubernetesReconciliationRuntime runtime = new KubernetesReconciliationRuntime();
@@ -122,17 +124,36 @@ class KubernetesReconciliationRuntimeIT {
     acknowledgeAbort(namespace);
 
     runtime.orphanStableResources(plan, context);
+    completeOrphanDeletionWithoutGarbageCollector(namespace);
+    removeStableRevisionFromService(namespace);
+
+    assertFalse(runtime.observeCleanup(plan, context).stableTrafficRestored());
+    runtime.orphanStableResources(plan, context);
 
     CleanupObservation observation = runtime.observeCleanup(plan, context);
-    assertTrue(observation.orphanComplete());
+    assertTrue(observation.orphanComplete(), observation.toString());
     assertEquals(
-        1,
+        0,
         client
             .genericKubernetesResources(rolloutDefinition())
             .inNamespace(namespace)
             .list()
             .getItems()
             .size());
+    List<ReplicaSet> retainedReplicaSets =
+        client.apps().replicaSets().inNamespace(namespace).list().getItems();
+    assertEquals(1, retainedReplicaSets.size());
+    assertEquals("checkout-stable-hash", retainedReplicaSets.getFirst().getMetadata().getName());
+    assertTrue(
+        retainedReplicaSets.getFirst().getMetadata().getOwnerReferences() == null
+            || retainedReplicaSets.getFirst().getMetadata().getOwnerReferences().stream()
+                .noneMatch(owner -> "Rollout".equals(owner.getKind())));
+    assertFalse(
+        retainedReplicaSets
+            .getFirst()
+            .getMetadata()
+            .getLabels()
+            .containsKey(ReleaseResourceRenderer.MANAGED_BY_LABEL));
     assertEquals(1, client.services().inNamespace(namespace).list().getItems().size());
     assertEquals(
         1, client.network().v1().ingresses().inNamespace(namespace).list().getItems().size());
@@ -168,6 +189,7 @@ class KubernetesReconciliationRuntimeIT {
             .list()
             .getItems()
             .isEmpty());
+    assertTrue(client.apps().replicaSets().inNamespace(namespace).list().getItems().isEmpty());
   }
 
   @SuppressWarnings("unchecked")
@@ -209,6 +231,12 @@ class KubernetesReconciliationRuntimeIT {
   }
 
   private static void prepareStableRestoration(String namespace, String canaryWeight) {
+    var rollout =
+        client
+            .genericKubernetesResources(rolloutDefinition())
+            .inNamespace(namespace)
+            .withName("checkout")
+            .get();
     client
         .genericKubernetesResources(rolloutDefinition())
         .inNamespace(namespace)
@@ -217,6 +245,8 @@ class KubernetesReconciliationRuntimeIT {
         .patch(
             PatchContext.of(PatchType.JSON_MERGE),
             "{\"status\":{\"abort\":false,\"stableRS\":\"stable-hash\"}}");
+    prepareReplicaSet(namespace, rollout.getMetadata().getUid(), "stable-hash");
+    prepareReplicaSet(namespace, rollout.getMetadata().getUid(), "canary-hash");
     client
         .services()
         .inNamespace(namespace)
@@ -271,6 +301,57 @@ class KubernetesReconciliationRuntimeIT {
         .serverSideApply();
   }
 
+  private static void prepareReplicaSet(String namespace, String rolloutUid, String revision) {
+    Map<String, String> labels =
+        new LinkedHashMap<>(
+            client
+                .genericKubernetesResources(rolloutDefinition())
+                .inNamespace(namespace)
+                .withName("checkout")
+                .get()
+                .getMetadata()
+                .getLabels());
+    labels.put("rollouts-pod-template-hash", revision);
+    client
+        .apps()
+        .replicaSets()
+        .inNamespace(namespace)
+        .resource(
+            new ReplicaSetBuilder()
+                .withNewMetadata()
+                .withName("checkout-" + revision)
+                .withNamespace(namespace)
+                .withLabels(labels)
+                .addNewOwnerReference()
+                .withApiVersion("argoproj.io/v1alpha1")
+                .withKind("Rollout")
+                .withName("checkout")
+                .withUid(rolloutUid)
+                .withController(true)
+                .withBlockOwnerDeletion(true)
+                .endOwnerReference()
+                .endMetadata()
+                .withNewSpec()
+                .withReplicas(2)
+                .withNewSelector()
+                .addToMatchLabels("rollouts-pod-template-hash", revision)
+                .endSelector()
+                .withNewTemplate()
+                .withNewMetadata()
+                .addToLabels("rollouts-pod-template-hash", revision)
+                .endMetadata()
+                .withNewSpec()
+                .addNewContainer()
+                .withName("app")
+                .withImage("registry.k8s.io/pause:3.10")
+                .endContainer()
+                .endSpec()
+                .endTemplate()
+                .endSpec()
+                .build())
+        .serverSideApply();
+  }
+
   private static void acknowledgeAbort(String namespace) {
     client
         .genericKubernetesResources(rolloutDefinition())
@@ -280,6 +361,36 @@ class KubernetesReconciliationRuntimeIT {
         .patch(
             PatchContext.of(PatchType.JSON_MERGE),
             "{\"status\":{\"abortedAt\":\"2026-08-29T12:00:00Z\"}}");
+  }
+
+  private static void completeOrphanDeletionWithoutGarbageCollector(String namespace) {
+    var rollout =
+        client
+            .genericKubernetesResources(rolloutDefinition())
+            .inNamespace(namespace)
+            .withName("checkout");
+    if (rollout.get() != null) {
+      rollout.edit(
+          current -> {
+            // kube-api-test does not run the garbage collector that completes orphan deletion.
+            current.getMetadata().setFinalizers(List.of());
+            return current;
+          });
+    }
+  }
+
+  private static void removeStableRevisionFromService(String namespace) {
+    client
+        .services()
+        .inNamespace(namespace)
+        .withName("checkout-stable")
+        .edit(
+            service -> {
+              Map<String, String> selector = new LinkedHashMap<>(service.getSpec().getSelector());
+              selector.remove("rollouts-pod-template-hash");
+              service.getSpec().setSelector(Map.copyOf(selector));
+              return service;
+            });
   }
 
   private static ResourceDefinitionContext rolloutDefinition() {

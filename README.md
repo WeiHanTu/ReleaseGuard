@@ -2,7 +2,7 @@
 
 ReleaseGuard is an implementation-in-progress GitOps progressive-delivery control plane for Kubernetes. Its target workflow lets developers describe a rollout declaratively, reconcile that desired state through a Java operator, evaluate canaries against Prometheus metrics, and retain an auditable deployment-event history in Kafka.
 
-> **Status:** Week 1 contracts and two Week 2 control-loop slices are implemented. General rollout progression, metric-driven decisions, child-event sources, external integrations, deployment packaging, and operational measurements are not implemented yet. No production-readiness claim is made.
+> **Status:** Week 1 contracts and the initial Week 2 reconciliation/finalization slices are implemented. General rollout progression, metric-driven decisions, child-event sources, external integrations, deployment packaging, and operational measurements are not implemented yet. No production-readiness claim is made.
 
 ## Implemented
 
@@ -13,9 +13,9 @@ ReleaseGuard is an implementation-in-progress GitOps progressive-delivery contro
 - A Java Operator SDK reconciler that records generation-scoped validation before applying child resources and refuses to publish progress status when an apply fails.
 - Deterministic server-side-apply rendering for stable/canary Services, ingress-nginx Ingress, and Argo Rollout resources with owner references and operator-owned selectors.
 - Fail-closed indefinite Argo pauses until metric-gate integration exists, plus a lightweight Kubernetes API-server test proving repeated apply does not duplicate resources.
-- A bounded cleanup finalizer that requests Argo abort, verifies controller acknowledgment, stable ready endpoints, and zero canary ingress weight, then deletes children or detaches stable resources according to policy.
+- A bounded cleanup finalizer that requests Argo abort, verifies controller acknowledgment, stable ready endpoints, and zero canary ingress weight, then either deletes every child or retains a controller-independent stable ReplicaSet, Service, and Ingress.
 - Eight-attempt exponential retry for reconciliation and configurable cleanup timing through `RELEASEGUARD_CLEANUP_DEADLINE` (default `60s`) and `RELEASEGUARD_CLEANUP_REQUEUE_INTERVAL` (default `1s`).
-- A checksum-pinned Kind test that stops the real Argo Rollouts controller during deletion, proves the finalizer remains held, restarts Argo, captures traffic weight restoration from 5% to 0%, and verifies managed-child deletion.
+- A checksum-pinned Kind test that exercises both deletion policies against Argo Rollouts v1.9.1 and Kubernetes v1.35.0: `Delete` holds its finalizer through an Argo outage and captures `5% -> 0%` restoration; `OrphanStable` retains two ready stable replicas and proves canary resources stay absent after both controllers restart.
 - JUnit and jqwik contract tests, formatting checks, CRD freshness verification, wrapper validation, and dependency review.
 
 ## Build and verify
@@ -40,7 +40,7 @@ Run the live Argo finalizer scenario with Docker and `kubectl` available:
 ./tests/e2e/kind-finalizer.sh
 ```
 
-This test runs the real Argo Rollouts controller but not ingress-nginx, so it verifies controller state and generated Ingress weights rather than network traffic.
+This test runs the real Argo Rollouts controller but not ingress-nginx, so it verifies control-plane state, ready endpoints, and generated Ingress weights rather than request routing.
 
 Example resources are under [`config/examples`](config/examples), generated CRDs under [`config/crd`](config/crd), and accepted architecture decisions under [`docs/adr`](docs/adr).
 

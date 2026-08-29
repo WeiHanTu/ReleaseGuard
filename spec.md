@@ -471,7 +471,7 @@ The first accepted generation has no stable baseline.
 
 - `RG-DEL-001`: The finalizer MUST use a configurable deadline and MUST surface cleanup failure.
 - `RG-DEL-002`: `Delete` MUST abort active rollout, remove generated children, then remove the finalizer.
-- `RG-DEL-003`: `OrphanStable` MUST restore stable traffic, remove canary and analysis children, remove ReleaseGuard ownership from retained stable resources, emit an event, then remove the finalizer.
+- `RG-DEL-003`: `OrphanStable` MUST restore stable traffic; retain a ready stable ReplicaSet, Service, and Ingress without ReleaseGuard or Rollout ownership; remove the Rollout plus canary and analysis children; emit an event; then remove the finalizer.
 - `RG-DEL-004`: The operator MUST NOT leave traffic intentionally routed to a canary after finalization.
 
 ## 13. Release state machine

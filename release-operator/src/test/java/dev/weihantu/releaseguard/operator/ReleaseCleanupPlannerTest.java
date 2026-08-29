@@ -42,10 +42,18 @@ class ReleaseCleanupPlannerTest {
   @Test
   void detachesOnlyAfterStableTrafficIsRestored() {
     CleanupObservation safe = observation(true, true, true, true, true, true, false);
-    CleanupObservation detached = observation(true, true, true, true, true, true, true);
+    CleanupObservation detached = observation(false, false, true, true, true, true, true);
 
     assertEquals(CleanupAction.OrphanStable, planner.decide(DeletionPolicy.OrphanStable, safe));
     assertEquals(CleanupAction.Complete, planner.decide(DeletionPolicy.OrphanStable, detached));
+  }
+
+  @Test
+  void continuesOrphaningWhileCanaryDescendantsAreTerminating() {
+    CleanupObservation terminating = observation(false, false, true, true, true, true, false);
+
+    assertEquals(
+        CleanupAction.OrphanStable, planner.decide(DeletionPolicy.OrphanStable, terminating));
   }
 
   @Test

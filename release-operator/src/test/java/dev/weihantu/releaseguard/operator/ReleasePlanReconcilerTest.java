@@ -113,7 +113,7 @@ class ReleasePlanReconcilerTest {
     assertFalse(orphaning.isRemoveFinalizer());
     assertEquals(1, runtime.orphanRequests);
 
-    runtime.observation = observation(true, true, true, true, true, true, true);
+    runtime.observation = observation(false, false, true, true, true, true, true);
     assertTrue(reconciler.cleanup(plan, null).isRemoveFinalizer());
   }
 

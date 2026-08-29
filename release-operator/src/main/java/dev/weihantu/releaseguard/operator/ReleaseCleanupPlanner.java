@@ -4,7 +4,13 @@ import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanSpec.DeletionPolicy;
 
 final class ReleaseCleanupPlanner {
   CleanupAction decide(DeletionPolicy deletionPolicy, CleanupObservation observation) {
+    if (deletionPolicy == DeletionPolicy.OrphanStable && observation.orphanComplete()) {
+      return CleanupAction.Complete;
+    }
     if (!observation.rolloutPresent()) {
+      if (deletionPolicy == DeletionPolicy.OrphanStable && observation.managedChildrenPresent()) {
+        return CleanupAction.OrphanStable;
+      }
       return observation.managedChildrenPresent()
           ? CleanupAction.DeleteChildren
           : CleanupAction.Complete;
@@ -17,7 +23,7 @@ final class ReleaseCleanupPlanner {
       return CleanupAction.WaitForStableTraffic;
     }
     if (deletionPolicy == DeletionPolicy.OrphanStable && observation.stableRevisionPresent()) {
-      return observation.orphanComplete() ? CleanupAction.Complete : CleanupAction.OrphanStable;
+      return CleanupAction.OrphanStable;
     }
     return CleanupAction.DeleteChildren;
   }

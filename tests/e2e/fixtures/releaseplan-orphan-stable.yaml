@@ -1,0 +1,44 @@
+apiVersion: delivery.weihantu.dev/v1alpha1
+kind: ReleasePlan
+metadata:
+  name: checkout
+  namespace: releaseguard-e2e
+spec:
+  workload:
+    replicas: 2
+    managedContainer: app
+    podTemplate:
+      metadata:
+        labels:
+          app.kubernetes.io/name: checkout
+      spec:
+        containers:
+          - name: app
+            image: registry.k8s.io/pause@sha256:ee6521f290b2168b6e0935a181d4cff9be1ac3f505666ef0e3c98fae8199917a
+            ports:
+              - name: http
+                containerPort: 8080
+  network:
+    servicePort: 80
+    targetPort: http
+    ingress:
+      className: nginx
+      host: checkout.releaseguard.local
+      path: /
+  rollout:
+    steps:
+      - weight: 5
+        duration: 10s
+      - weight: 100
+    gates:
+      - policyRef: http-error-ratio
+        maxCanaryValue: 0.01
+        maxDeltaFromStable: 0.005
+        consecutiveFailures: 3
+        consecutiveSuccesses: 2
+  failurePolicy:
+    metricUnavailable: Pause
+    gateFailed: Rollback
+    rollbackDeadline: 60s
+    auditBackpressure: PausePromotion
+  deletionPolicy: OrphanStable

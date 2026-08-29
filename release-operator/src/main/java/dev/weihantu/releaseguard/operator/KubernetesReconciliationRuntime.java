@@ -5,11 +5,13 @@ import dev.weihantu.releaseguard.api.v1alpha1.MetricPolicySpec;
 import dev.weihantu.releaseguard.api.v1alpha1.MetricPolicyStatus;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlan;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanSpec;
+import io.fabric8.kubernetes.api.model.DeletionPropagation;
 import io.fabric8.kubernetes.api.model.Endpoints;
 import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
 import io.fabric8.kubernetes.api.model.HasMetadata;
 import io.fabric8.kubernetes.api.model.ObjectMeta;
 import io.fabric8.kubernetes.api.model.Service;
+import io.fabric8.kubernetes.api.model.apps.ReplicaSet;
 import io.fabric8.kubernetes.api.model.networking.v1.Ingress;
 import io.fabric8.kubernetes.client.dsl.Resource;
 import io.fabric8.kubernetes.client.dsl.base.PatchContext;
@@ -26,6 +28,8 @@ import java.util.Set;
 final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
   private static final String CANARY_WEIGHT_ANNOTATION =
       "nginx.ingress.kubernetes.io/canary-weight";
+  private static final String ORPHAN_STABLE_REVISION_ANNOTATION =
+      "delivery.weihantu.dev/orphan-stable-revision";
 
   @Override
   public Map<String, MetricPolicySpec> acceptedPolicies(
@@ -91,14 +95,21 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
     boolean abortAcknowledged =
         Boolean.TRUE.equals(rolloutStatus.get("abort")) && rolloutStatus.get("abortedAt") != null;
     String stableReplicaSet = stringValue(rolloutStatus.get("stableRS"));
+    String stableServiceRevision = stableReplicaSetSelector(stableService);
+    if ((stableReplicaSet == null || stableReplicaSet.isBlank()) && stableService != null) {
+      stableReplicaSet = orphanStableRevision(stableService);
+    }
+    if (stableReplicaSet == null || stableReplicaSet.isBlank()) {
+      stableReplicaSet = stableServiceRevision;
+    }
+    String observedStableReplicaSet = stableReplicaSet;
     boolean stableRevisionPresent = stableReplicaSet != null && !stableReplicaSet.isBlank();
     boolean stableSelectorRestored =
         stableService != null
             && stableService.getSpec() != null
             && stableService.getSpec().getSelector() != null
             && stableReplicaSet != null
-            && stableReplicaSet.equals(
-                stableService.getSpec().getSelector().get("rollouts-pod-template-hash"));
+            && stableReplicaSet.equals(stableServiceRevision);
     boolean stableTrafficRestored =
         stableSelectorRestored && hasReadyEndpoint(context, namespace, name + "-stable");
     boolean canaryTrafficZero =
@@ -110,20 +121,37 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
                             .getMetadata()
                             .getAnnotations()
                             .get(CANARY_WEIGHT_ANNOTATION)));
+    List<ReplicaSet> planReplicaSets = planReplicaSets(context, namespace, uid);
     boolean managedChildrenPresent =
         rollout != null
             || stableService != null
             || canaryService != null
             || stableIngress != null
-            || canaryIngress != null;
+            || canaryIngress != null
+            || !planReplicaSets.isEmpty();
+    List<ReplicaSet> retainedStableReplicaSets =
+        observedStableReplicaSet == null
+            ? List.of()
+            : planReplicaSets.stream()
+                .filter(
+                    replicaSet ->
+                        observedStableReplicaSet.equals(
+                            replicaSet.getMetadata().getLabels().get("rollouts-pod-template-hash")))
+                .toList();
     boolean retainedDetached =
-        rollout != null
+        rollout == null
+            && retainedStableReplicaSets.size() == 1
             && stableService != null
             && stableIngress != null
-            && detached(rollout.getMetadata(), uid)
+            && detachedFromRollout(retainedStableReplicaSets.getFirst().getMetadata(), name)
+            && detached(retainedStableReplicaSets.getFirst().getMetadata(), uid)
             && detached(stableService.getMetadata(), uid)
             && detached(stableIngress.getMetadata(), uid);
-    boolean orphanComplete = retainedDetached && canaryService == null && canaryIngress == null;
+    boolean orphanComplete =
+        retainedDetached
+            && planReplicaSets.size() == 1
+            && canaryService == null
+            && canaryIngress == null;
 
     return new CleanupObservation(
         rollout != null,
@@ -148,7 +176,10 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
   public void deleteManagedChildren(ReleasePlan plan, Context<ReleasePlan> context) {
     String namespace = plan.getMetadata().getNamespace();
     String name = plan.getMetadata().getName();
+    String uid = plan.getMetadata().getUid();
     rollout(context, namespace, name).delete();
+    planReplicaSets(context, namespace, uid)
+        .forEach(replicaSet -> context.getClient().resource(replicaSet).delete());
     context
         .getClient()
         .network()
@@ -168,6 +199,37 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
     String name = plan.getMetadata().getName();
     String uid = plan.getMetadata().getUid();
 
+    Service stableService =
+        context.getClient().services().inNamespace(namespace).withName(name + "-stable").get();
+    String stableReplicaSet = stableReplicaSetSelector(stableService);
+    if (stableReplicaSet == null || stableReplicaSet.isBlank()) {
+      stableReplicaSet = orphanStableRevision(stableService);
+    }
+    String retainedStableReplicaSet = stableReplicaSet;
+    List<ReplicaSet> replicaSets = planReplicaSets(context, namespace, uid);
+
+    for (ReplicaSet replicaSet : replicaSets) {
+      String replicaSetRevision =
+          replicaSet.getMetadata().getLabels().get("rollouts-pod-template-hash");
+      if (stableReplicaSet != null && stableReplicaSet.equals(replicaSetRevision)) {
+        detachStableReplicaSet(
+            context
+                .getClient()
+                .apps()
+                .replicaSets()
+                .inNamespace(namespace)
+                .withName(replicaSet.getMetadata().getName()),
+            uid,
+            name);
+      }
+    }
+    prepareStableServiceForOrphan(
+        context.getClient().services().inNamespace(namespace).withName(name + "-stable"),
+        uid,
+        stableReplicaSet);
+    detach(
+        context.getClient().network().v1().ingresses().inNamespace(namespace).withName(name), uid);
+
     context.getClient().services().inNamespace(namespace).withName(name + "-canary").delete();
     context
         .getClient()
@@ -177,10 +239,14 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
         .inNamespace(namespace)
         .withName(canaryIngressName(name))
         .delete();
-    detach(rollout(context, namespace, name), uid);
-    detach(context.getClient().services().inNamespace(namespace).withName(name + "-stable"), uid);
-    detach(
-        context.getClient().network().v1().ingresses().inNamespace(namespace).withName(name), uid);
+    rollout(context, namespace, name).withPropagationPolicy(DeletionPropagation.ORPHAN).delete();
+    replicaSets.stream()
+        .filter(
+            replicaSet ->
+                retainedStableReplicaSet == null
+                    || !retainedStableReplicaSet.equals(
+                        replicaSet.getMetadata().getLabels().get("rollouts-pod-template-hash")))
+        .forEach(replicaSet -> context.getClient().resource(replicaSet).delete());
   }
 
   @Override
@@ -231,6 +297,36 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
     return name + "-" + name + "-canary";
   }
 
+  private static String stableReplicaSetSelector(Service stableService) {
+    if (stableService == null
+        || stableService.getSpec() == null
+        || stableService.getSpec().getSelector() == null) {
+      return null;
+    }
+    return stableService.getSpec().getSelector().get("rollouts-pod-template-hash");
+  }
+
+  private static String orphanStableRevision(Service stableService) {
+    if (stableService == null
+        || stableService.getMetadata() == null
+        || stableService.getMetadata().getAnnotations() == null) {
+      return null;
+    }
+    return stableService.getMetadata().getAnnotations().get(ORPHAN_STABLE_REVISION_ANNOTATION);
+  }
+
+  private static List<ReplicaSet> planReplicaSets(
+      Context<ReleasePlan> context, String namespace, String planUid) {
+    return context
+        .getClient()
+        .apps()
+        .replicaSets()
+        .inNamespace(namespace)
+        .withLabel(ReleaseResourceRenderer.PLAN_UID_LABEL, planUid)
+        .list()
+        .getItems();
+  }
+
   private static Map<?, ?> asMap(Object value) {
     return value instanceof Map<?, ?> map ? map : Map.of();
   }
@@ -254,6 +350,15 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
     return ownerDetached && managerDetached;
   }
 
+  private static boolean detachedFromRollout(ObjectMeta metadata, String rolloutName) {
+    return metadata != null
+        && (metadata.getOwnerReferences() == null
+            || metadata.getOwnerReferences().stream()
+                .noneMatch(
+                    owner ->
+                        "Rollout".equals(owner.getKind()) && rolloutName.equals(owner.getName())));
+  }
+
   private static <T extends HasMetadata> void detach(Resource<T> resource, String ownerUid) {
     if (resource.get() == null) {
       return;
@@ -265,6 +370,69 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
             metadata.setOwnerReferences(
                 metadata.getOwnerReferences().stream()
                     .filter(owner -> !ownerUid.equals(owner.getUid()))
+                    .toList());
+          }
+          if (metadata.getLabels() != null) {
+            Map<String, String> labels = new LinkedHashMap<>(metadata.getLabels());
+            labels.remove(ReleaseResourceRenderer.MANAGED_BY_LABEL);
+            metadata.setLabels(Map.copyOf(labels));
+          }
+          return current;
+        });
+  }
+
+  private static void prepareStableServiceForOrphan(
+      Resource<Service> resource, String ownerUid, String stableReplicaSet) {
+    if (resource.get() == null || stableReplicaSet == null || stableReplicaSet.isBlank()) {
+      return;
+    }
+    resource.edit(
+        current -> {
+          ObjectMeta metadata = current.getMetadata();
+          if (metadata.getOwnerReferences() != null) {
+            metadata.setOwnerReferences(
+                metadata.getOwnerReferences().stream()
+                    .filter(owner -> !ownerUid.equals(owner.getUid()))
+                    .toList());
+          }
+          Map<String, String> labels =
+              metadata.getLabels() == null
+                  ? new LinkedHashMap<>()
+                  : new LinkedHashMap<>(metadata.getLabels());
+          labels.remove(ReleaseResourceRenderer.MANAGED_BY_LABEL);
+          metadata.setLabels(Map.copyOf(labels));
+          Map<String, String> annotations =
+              metadata.getAnnotations() == null
+                  ? new LinkedHashMap<>()
+                  : new LinkedHashMap<>(metadata.getAnnotations());
+          annotations.put(ORPHAN_STABLE_REVISION_ANNOTATION, stableReplicaSet);
+          metadata.setAnnotations(Map.copyOf(annotations));
+          Map<String, String> selector =
+              current.getSpec().getSelector() == null
+                  ? new LinkedHashMap<>()
+                  : new LinkedHashMap<>(current.getSpec().getSelector());
+          selector.put("rollouts-pod-template-hash", stableReplicaSet);
+          current.getSpec().setSelector(Map.copyOf(selector));
+          return current;
+        });
+  }
+
+  private static void detachStableReplicaSet(
+      Resource<ReplicaSet> resource, String ownerUid, String rolloutName) {
+    if (resource.get() == null) {
+      return;
+    }
+    resource.edit(
+        current -> {
+          ObjectMeta metadata = current.getMetadata();
+          if (metadata.getOwnerReferences() != null) {
+            metadata.setOwnerReferences(
+                metadata.getOwnerReferences().stream()
+                    .filter(
+                        owner ->
+                            !ownerUid.equals(owner.getUid())
+                                && !("Rollout".equals(owner.getKind())
+                                    && rolloutName.equals(owner.getName())))
                     .toList());
           }
           if (metadata.getLabels() != null) {

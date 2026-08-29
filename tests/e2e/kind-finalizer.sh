@@ -68,6 +68,25 @@ wait_for_nonempty() {
   return 1
 }
 
+wait_for_replicaset_by_hash() {
+  local revision="$1"
+  local timeout_seconds="$2"
+  local deadline=$((SECONDS + timeout_seconds))
+  local actual=""
+  while ((SECONDS < deadline)); do
+    actual="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get replicasets \
+      -l "rollouts-pod-template-hash=${revision}" \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+    if [[ -n "${actual}" ]]; then
+      printf '%s' "${actual}"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "Timed out waiting for ReplicaSet with revision ${revision}" >&2
+  return 1
+}
+
 wait_for_absent() {
   local resource="$1"
   local timeout_seconds="$2"
@@ -109,6 +128,46 @@ stop_watchers() {
   ingress_watch_pid=""
 }
 
+stop_operator() {
+  if [[ -n "${operator_pid}" ]] && kill -0 "${operator_pid}" >/dev/null 2>&1; then
+    kill -TERM "${operator_pid}" >/dev/null 2>&1 || true
+    wait "${operator_pid}" >/dev/null 2>&1 || true
+  fi
+  operator_pid=""
+}
+
+start_operator() {
+  RELEASEGUARD_CLEANUP_DEADLINE=90s \
+  RELEASEGUARD_CLEANUP_REQUEUE_INTERVAL=2s \
+    "${REPOSITORY_ROOT}/release-operator/build/install/release-operator/bin/release-operator" \
+    >>"${OPERATOR_LOG}" 2>&1 &
+  operator_pid=$!
+  sleep 2
+  if ! kill -0 "${operator_pid}" >/dev/null 2>&1; then
+    echo "ReleaseGuard operator exited during startup" >&2
+    return 1
+  fi
+}
+
+assert_detached() {
+  local resource="$1"
+  local forbidden_owner="$2"
+  local owners
+  local managed_by
+  owners="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get "${resource}" \
+    -o jsonpath='{range .metadata.ownerReferences[*]}{.kind}{"/"}{.name}{" "}{end}')"
+  managed_by="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get "${resource}" \
+    -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}')"
+  if [[ "${owners}" == *"${forbidden_owner}"* ]]; then
+    echo "${resource} still has forbidden owner ${forbidden_owner}: ${owners}" >&2
+    return 1
+  fi
+  if [[ "${managed_by}" == "releaseguard" ]]; then
+    echo "${resource} still has the ReleaseGuard managed-by label" >&2
+    return 1
+  fi
+}
+
 cleanup() {
   local exit_code=$?
   trap - EXIT
@@ -120,10 +179,7 @@ cleanup() {
     diagnostics
   fi
   stop_watchers
-  if [[ -n "${operator_pid}" ]] && kill -0 "${operator_pid}" >/dev/null 2>&1; then
-    kill -TERM "${operator_pid}" >/dev/null 2>&1 || true
-    wait "${operator_pid}" >/dev/null 2>&1 || true
-  fi
+  stop_operator
   if ((cluster_created == 1)) && [[ "${RELEASEGUARD_E2E_KEEP_CLUSTER:-0}" != "1" ]]; then
     "${KIND_BIN}" delete cluster --name "${CLUSTER_NAME}" >/dev/null 2>&1 || true
     rm -f "${KUBECONFIG_PATH}"
@@ -180,16 +236,7 @@ log "Installing ReleaseGuard CRDs and starting the operator locally"
 ${KUBECTL_BIN} apply -f "${REPOSITORY_ROOT}/config/crd" >/dev/null
 ${KUBECTL_BIN} create namespace "${TEST_NAMESPACE}"
 "${REPOSITORY_ROOT}/gradlew" -p "${REPOSITORY_ROOT}" :release-operator:installDist --no-daemon
-RELEASEGUARD_CLEANUP_DEADLINE=90s \
-RELEASEGUARD_CLEANUP_REQUEUE_INTERVAL=2s \
-  "${REPOSITORY_ROOT}/release-operator/build/install/release-operator/bin/release-operator" \
-  >"${OPERATOR_LOG}" 2>&1 &
-operator_pid=$!
-sleep 2
-if ! kill -0 "${operator_pid}" >/dev/null 2>&1; then
-  echo "ReleaseGuard operator exited during startup" >&2
-  exit 1
-fi
+start_operator
 
 ${KUBECTL_BIN} apply -f "${REPOSITORY_ROOT}/config/examples/metricpolicy-http-errors.yaml" >/dev/null
 policy_generation="$(${KUBECTL_BIN} get metricpolicy http-error-ratio -o jsonpath='{.metadata.generation}')"
@@ -269,16 +316,86 @@ if ! grep -Eq '^0$' "${ingress_watch_log}"; then
 fi
 aborted_at="$(awk '$1 == "true" && $2 ~ /^20[0-9][0-9]-/ {print $2; exit}' "${rollout_watch_log}")"
 
+delete_stable_revision="${stable_revision}"
+delete_aborted_at="${aborted_at}"
+
+log "Creating an OrphanStable release and advancing it to five percent canary weight"
+${KUBECTL_BIN} apply \
+  -f "${REPOSITORY_ROOT}/tests/e2e/fixtures/releaseplan-orphan-stable.yaml" >/dev/null
+wait_for_value releaseplan/checkout '{.status.phase}' Bootstrapping 60
+wait_for_value rollout/checkout '{.status.phase}' Healthy 180
+orphan_stable_revision="$(wait_for_nonempty rollout/checkout '{.status.stableRS}' 30)"
+wait_for_nonempty endpoints/checkout-stable '{.subsets[0].addresses[0].ip}' 60 >/dev/null
+orphan_stable_replicaset="$(wait_for_replicaset_by_hash "${orphan_stable_revision}" 30)"
+orphan_plan_uid="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get releaseplan checkout \
+  -o jsonpath='{.metadata.uid}')"
+
+${KUBECTL_BIN} -n "${TEST_NAMESPACE}" patch rollout checkout --type=merge \
+  -p '{"spec":{"template":{"metadata":{"labels":{"releaseguard.e2e/revision":"orphan-candidate"}}}}}' \
+  >/dev/null
+wait_for_value rollout/checkout '{.status.phase}' Paused 180
+wait_for_value ingress/checkout-checkout-canary \
+  '{.metadata.annotations.nginx\.ingress\.kubernetes\.io/canary-weight}' 5 60
+orphan_candidate_revision="$(wait_for_nonempty rollout/checkout '{.status.currentPodHash}' 30)"
+orphan_candidate_replicaset="checkout-${orphan_candidate_revision}"
+
+log "Deleting with OrphanStable and verifying a controller-independent stable workload"
+${KUBECTL_BIN} -n "${TEST_NAMESPACE}" delete releaseplan checkout --wait=false >/dev/null
+wait_for_absent releaseplan/checkout 90
+wait_for_absent rollout/checkout 30
+wait_for_absent "replicaset/${orphan_candidate_replicaset}" 30
+wait_for_absent service/checkout-canary 30
+wait_for_absent ingress/checkout-checkout-canary 30
+wait_for_value "replicaset/${orphan_stable_replicaset}" '{.status.readyReplicas}' 2 60
+wait_for_nonempty endpoints/checkout-stable '{.subsets[0].addresses[0].ip}' 30 >/dev/null
+assert_detached "replicaset/${orphan_stable_replicaset}" "Rollout/checkout"
+assert_detached service/checkout-stable "ReleasePlan/checkout"
+assert_detached ingress/checkout "ReleasePlan/checkout"
+
+retained_replicasets="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get replicasets \
+  -l "delivery.weihantu.dev/plan-uid=${orphan_plan_uid}" \
+  -o name 2>/dev/null || true)"
+if [[ "${retained_replicasets}" != "replicaset.apps/${orphan_stable_replicaset}" ]]; then
+  echo "Expected only ${orphan_stable_replicaset}; found: ${retained_replicasets}" >&2
+  exit 1
+fi
+
+log "Restarting both controllers and proving deleted canary resources are not recreated"
+${KUBECTL_BIN} -n argo-rollouts rollout restart deployment/argo-rollouts >/dev/null
+${KUBECTL_BIN} -n argo-rollouts rollout status deployment/argo-rollouts --timeout=120s
+stop_operator
+start_operator
+sleep 10
+if ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get rollout/checkout >/dev/null 2>&1 \
+  || ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get service/checkout-canary >/dev/null 2>&1 \
+  || ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get ingress/checkout-checkout-canary >/dev/null 2>&1 \
+  || ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get "replicaset/${orphan_candidate_replicaset}" >/dev/null 2>&1; then
+  echo "A controller recreated an OrphanStable canary resource" >&2
+  exit 1
+fi
+wait_for_value "replicaset/${orphan_stable_replicaset}" '{.status.readyReplicas}' 2 30
+wait_for_nonempty endpoints/checkout-stable '{.subsets[0].addresses[0].ip}' 30 >/dev/null
+assert_detached "replicaset/${orphan_stable_replicaset}" "Rollout/checkout"
+assert_detached service/checkout-stable "ReleasePlan/checkout"
+assert_detached ingress/checkout "ReleasePlan/checkout"
+
 cat >"${EVIDENCE_FILE}" <<EOF
 kind_version=$(${KIND_BIN} version)
 kubernetes_version=$(${KUBECTL_BIN} version -o json | tr -d '\n')
 argo_rollouts_version=${ARGO_ROLLOUTS_VERSION}
 argo_install_sha256=${ARGO_INSTALL_SHA}
-stable_revision=${stable_revision}
+delete_stable_revision=${delete_stable_revision}
 canary_weight_before_outage=5
 abort_request_held_finalizer_without_controller=true
-argo_aborted_at=${aborted_at}
+delete_argo_aborted_at=${delete_aborted_at}
 canary_weight_after_recovery=0
-stable_selector_after_recovery=${stable_revision}
+stable_selector_after_recovery=${delete_stable_revision}
 managed_children_deleted=true
+orphan_stable_revision=${orphan_stable_revision}
+orphan_stable_replicaset=${orphan_stable_replicaset}
+orphan_candidate_replicaset_deleted=true
+orphan_rollout_deleted=true
+orphan_stable_resources_detached=true
+orphan_ready_replicas_after_restart=2
+orphan_canary_not_recreated_after_restart=true
 EOF
