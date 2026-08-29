@@ -5,8 +5,8 @@
 | Status | Draft |
 | Specification version | 0.1.0 |
 | Target API version | `delivery.weihantu.dev/v1alpha1` |
-| Last updated | 2026-08-26 |
-| Implementation status | Not started |
+| Last updated | 2026-08-29 |
+| Implementation status | Week 2 in progress; not conformant with all v1 requirements |
 
 This document is the normative specification for ReleaseGuard v1. The implementation roadmap and release-evidence policy live in [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md).
 

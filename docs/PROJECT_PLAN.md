@@ -20,9 +20,9 @@ Installing Argo CD, Kafka, and Grafana is not sufficient. ReleaseGuard must own 
 
 ## 2. Status and evidence policy
 
-Current status: **Week 1 contracts and bootstrap implemented**.
+Current status: **Week 2 operator control loop in progress**.
 
-The Java 21 multi-module build, four API models, semantic validators, deterministic CRD generation, architecture decisions, contract tests, and minimal CI are implemented. Week 2 onward remains planned. Numbers marked as targets are acceptance criteria, not benchmark results or resume claims.
+The Java 21 multi-module build, four API models, semantic validators, deterministic CRD generation, architecture decisions, contract tests, minimal CI, and initial operator control-loop slices are implemented. Week 2 remains in progress; Week 3 onward is planned. Numbers marked as targets are acceptance criteria, not benchmark results or resume claims.
 
 Evidence rules:
 
@@ -573,7 +573,7 @@ Exit achieved: `./gradlew clean check` regenerates and compares all four committ
 - Render deterministic Argo Rollout resources.
 - Test duplicate reconciliation, resource deletion, and optimistic-concurrency conflicts.
 
-Progress: the Java Operator SDK adapter, generation-scoped validation status, deterministic owner references and selectors, fail-closed Argo rendering, explicit server-side-apply field manager, duplicate-planning tests, and repeated-apply Kubernetes API-server test are implemented. Argo observation, bounded retry policy, finalization, deletion tests, child-event sources, and optimistic-concurrency conflict tests remain incomplete; Week 2 has not reached its exit criterion.
+Progress: the Java Operator SDK adapter, generation-scoped validation status, deterministic owner references and selectors, fail-closed Argo rendering, explicit server-side-apply field manager, repeated-apply API-server test, eight-attempt exponential retry, and bounded `Delete`/`OrphanStable` finalization are implemented. Cleanup tests simulate Argo status and ingress behavior against a lightweight Kubernetes API server; a live Argo-controller end-to-end test, general rollout observation, child-event sources, and optimistic-concurrency conflict injection remain incomplete. Week 2 has not reached its exit criterion.
 
 Exit: a plan converges repeatedly without duplicate or oscillating resources.
 

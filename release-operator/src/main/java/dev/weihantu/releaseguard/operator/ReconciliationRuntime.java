@@ -11,4 +11,14 @@ interface ReconciliationRuntime {
   Map<String, MetricPolicySpec> acceptedPolicies(ReleasePlan plan, Context<ReleasePlan> context);
 
   void apply(List<HasMetadata> resources, Context<ReleasePlan> context);
+
+  CleanupObservation observeCleanup(ReleasePlan plan, Context<ReleasePlan> context);
+
+  void requestAbort(ReleasePlan plan, Context<ReleasePlan> context);
+
+  void deleteManagedChildren(ReleasePlan plan, Context<ReleasePlan> context);
+
+  void orphanStableResources(ReleasePlan plan, Context<ReleasePlan> context);
+
+  void publishCleanupStatus(ReleasePlan plan, Context<ReleasePlan> context);
 }

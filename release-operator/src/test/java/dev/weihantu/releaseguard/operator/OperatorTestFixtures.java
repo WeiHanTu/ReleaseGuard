@@ -18,19 +18,28 @@ final class OperatorTestFixtures {
   private OperatorTestFixtures() {}
 
   static ReleasePlan plan(long generation) {
+    return plan(generation, "demo", ReleasePlanSpec.DeletionPolicy.Delete);
+  }
+
+  static ReleasePlan plan(
+      long generation, String namespace, ReleasePlanSpec.DeletionPolicy deletionPolicy) {
     ReleasePlan plan = new ReleasePlan();
     plan.setMetadata(
         new ObjectMetaBuilder()
             .withName("checkout")
-            .withNamespace("demo")
+            .withNamespace(namespace)
             .withUid(UID)
             .withGeneration(generation)
             .build());
-    plan.setSpec(spec());
+    plan.setSpec(spec(deletionPolicy));
     return plan;
   }
 
   static ReleasePlanSpec spec() {
+    return spec(ReleasePlanSpec.DeletionPolicy.Delete);
+  }
+
+  static ReleasePlanSpec spec(ReleasePlanSpec.DeletionPolicy deletionPolicy) {
     return new ReleasePlanSpec(
         new ReleasePlanSpec.Workload(10, "app", podTemplate()),
         new ReleasePlanSpec.Network(
@@ -48,7 +57,7 @@ final class OperatorTestFixtures {
             ReleasePlanSpec.GateFailed.Rollback,
             "60s",
             ReleasePlanSpec.AuditBackpressure.PausePromotion),
-        ReleasePlanSpec.DeletionPolicy.Delete);
+        deletionPolicy);
   }
 
   static Map<String, MetricPolicySpec> policies() {
