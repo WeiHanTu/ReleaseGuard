@@ -12,27 +12,22 @@ import org.junit.jupiter.api.Test;
 class KubernetesReconciliationRuntimeTest {
   @Test
   void acceptsOnlyThePolicyVersionThatPassedDryRun() {
-    MetricPolicy policy = policy("17", "17", true);
+    MetricPolicy policy = policy(17, 17, true);
     assertTrue(KubernetesReconciliationRuntime.isAcceptedCurrentVersion(policy));
 
-    policy.setStatus(new MetricPolicyStatus(true, "16", null, null, List.of()));
+    policy.setStatus(new MetricPolicyStatus(true, 16L, null, null, List.of()));
     assertFalse(KubernetesReconciliationRuntime.isAcceptedCurrentVersion(policy));
 
-    policy.setStatus(new MetricPolicyStatus(false, "17", null, null, List.of()));
+    policy.setStatus(new MetricPolicyStatus(false, 17L, null, null, List.of()));
     assertFalse(KubernetesReconciliationRuntime.isAcceptedCurrentVersion(policy));
   }
 
-  private static MetricPolicy policy(
-      String resourceVersion, String observedResourceVersion, boolean accepted) {
+  private static MetricPolicy policy(long generation, long observedGeneration, boolean accepted) {
     MetricPolicy policy = new MetricPolicy();
     policy.setMetadata(
-        new ObjectMetaBuilder()
-            .withName("http-errors")
-            .withResourceVersion(resourceVersion)
-            .build());
+        new ObjectMetaBuilder().withName("http-errors").withGeneration(generation).build());
     policy.setSpec(OperatorTestFixtures.policy());
-    policy.setStatus(
-        new MetricPolicyStatus(accepted, observedResourceVersion, null, null, List.of()));
+    policy.setStatus(new MetricPolicyStatus(accepted, observedGeneration, null, null, List.of()));
     return policy;
   }
 }

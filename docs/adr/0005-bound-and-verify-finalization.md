@@ -22,4 +22,4 @@ Reconciliation failures use eight attempts with exponential backoff from `250ms`
 
 ## Consequences
 
-Finalization is bounded and idempotent, but `OrphanStable` is best-effort after the deadline. Current API-server integration tests simulate Argo status transitions; they do not run the Argo Rollouts or ingress-nginx controllers. The required deletion audit event remains unimplemented until the outbox exists, so this slice does not fully satisfy `RG-DEL-003` and is not production evidence.
+Finalization is bounded and idempotent, but `OrphanStable` is best-effort after the deadline. API-server integration tests cover both policies. A checksum-pinned Kind scenario additionally tests `Delete` against the real Argo Rollouts controller, including controller outage and recovery; it does not run ingress-nginx or exercise `OrphanStable` live, so it proves control-plane state rather than request routing. The required deletion audit event remains unimplemented until the outbox exists, so this slice does not fully satisfy `RG-DEL-003` and is not production evidence.

@@ -573,7 +573,7 @@ Exit achieved: `./gradlew clean check` regenerates and compares all four committ
 - Render deterministic Argo Rollout resources.
 - Test duplicate reconciliation, resource deletion, and optimistic-concurrency conflicts.
 
-Progress: the Java Operator SDK adapter, generation-scoped validation status, deterministic owner references and selectors, fail-closed Argo rendering, explicit server-side-apply field manager, repeated-apply API-server test, eight-attempt exponential retry, and bounded `Delete`/`OrphanStable` finalization are implemented. Cleanup tests simulate Argo status and ingress behavior against a lightweight Kubernetes API server; a live Argo-controller end-to-end test, general rollout observation, child-event sources, and optimistic-concurrency conflict injection remain incomplete. Week 2 has not reached its exit criterion.
+Progress: the Java Operator SDK adapter, generation-scoped validation status, deterministic owner references and selectors, fail-closed Argo rendering, explicit server-side-apply field manager, repeated-apply API-server test, eight-attempt exponential retry, and bounded `Delete`/`OrphanStable` finalization are implemented. A checksum-pinned Kind test runs the real Argo Rollouts controller, pauses it during active-canary deletion, proves the finalizer remains held, then captures abort acknowledgment, `5% -> 0%` canary restoration, stable selector restoration, and child deletion after recovery. It does not run ingress-nginx or exercise `OrphanStable` live. General rollout observation, explicit child-event sources, and optimistic-concurrency conflict injection remain incomplete; Week 2 has not reached its exit criterion.
 
 Exit: a plan converges repeatedly without duplicate or oscillating resources.
 

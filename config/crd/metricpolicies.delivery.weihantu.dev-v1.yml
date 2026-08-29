@@ -113,8 +113,8 @@ spec:
                 type: "array"
               lastDryRunAt:
                 type: "string"
-              observedResourceVersion:
-                type: "string"
+              observedGeneration:
+                type: "integer"
               reason:
                 type: "string"
             type: "object"

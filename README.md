@@ -15,6 +15,7 @@ ReleaseGuard is an implementation-in-progress GitOps progressive-delivery contro
 - Fail-closed indefinite Argo pauses until metric-gate integration exists, plus a lightweight Kubernetes API-server test proving repeated apply does not duplicate resources.
 - A bounded cleanup finalizer that requests Argo abort, verifies controller acknowledgment, stable ready endpoints, and zero canary ingress weight, then deletes children or detaches stable resources according to policy.
 - Eight-attempt exponential retry for reconciliation and configurable cleanup timing through `RELEASEGUARD_CLEANUP_DEADLINE` (default `60s`) and `RELEASEGUARD_CLEANUP_REQUEUE_INTERVAL` (default `1s`).
+- A checksum-pinned Kind test that stops the real Argo Rollouts controller during deletion, proves the finalizer remains held, restarts Argo, captures traffic weight restoration from 5% to 0%, and verifies managed-child deletion.
 - JUnit and jqwik contract tests, formatting checks, CRD freshness verification, wrapper validation, and dependency review.
 
 ## Build and verify
@@ -31,6 +32,15 @@ When an API model changes, deliberately refresh and review the committed schemas
 ./gradlew :api-model:syncCrds
 git diff -- config/crd
 ```
+
+Run the live Argo finalizer scenario with Docker and `kubectl` available:
+
+```bash
+./scripts/install-kind.sh
+./tests/e2e/kind-finalizer.sh
+```
+
+This test runs the real Argo Rollouts controller but not ingress-nginx, so it verifies controller state and generated Ingress weights rather than network traffic.
 
 Example resources are under [`config/examples`](config/examples), generated CRDs under [`config/crd`](config/crd), and accepted architecture decisions under [`docs/adr`](docs/adr).
 

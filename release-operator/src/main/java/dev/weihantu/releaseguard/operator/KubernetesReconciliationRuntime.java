@@ -185,7 +185,7 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
 
   @Override
   public void publishCleanupStatus(ReleasePlan plan, Context<ReleasePlan> context) {
-    context.resourceOperations().serverSideApplyPrimaryStatus(plan);
+    context.resourceOperations().updatePrimaryStatus(plan);
   }
 
   static boolean isAcceptedCurrentVersion(MetricPolicy policy) {
@@ -195,8 +195,7 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
     MetricPolicyStatus status = policy.getStatus();
     return status != null
         && Boolean.TRUE.equals(status.accepted())
-        && Objects.equals(
-            policy.getMetadata().getResourceVersion(), status.observedResourceVersion());
+        && Objects.equals(policy.getMetadata().getGeneration(), status.observedGeneration());
   }
 
   private static Resource<GenericKubernetesResource> rollout(

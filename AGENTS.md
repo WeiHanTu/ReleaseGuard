@@ -12,7 +12,7 @@ Use the committed Gradle wrapper; do not rely on a system Gradle installation.
 ./gradlew clean check
 ```
 
-This is the required local gate. Use `./gradlew :api-model:test` while iterating and `./gradlew :api-model:syncCrds` after intentional API changes; review the resulting `config/crd/` diff. Run later Kind, Helm, and cloud workflows only through committed scripts or Gradle tasks so CI and reviewers can reproduce them. Do not document commands that do not yet exist.
+This is the required local gate. Use `./gradlew :api-model:test` while iterating and `./gradlew :api-model:syncCrds` after API changes; review `config/crd/`. For the live Argo deletion test, run `./scripts/install-kind.sh` and `./tests/e2e/kind-finalizer.sh`. Run future Helm and cloud workflows only through committed scripts or Gradle tasks.
 
 If Python tooling is introduced, manage it with `uv`, commit `pyproject.toml` and `uv.lock`, and use `uv sync --locked`. Do not add `pip install` instructions or an unmanaged `requirements.txt`.
 
@@ -22,7 +22,7 @@ Target Java 21 and Gradle Kotlin DSL. Use four-space indentation, UTF-8, explici
 
 ## Testing Guidelines
 
-Name unit tests `*Test`, integration tests `*IT`, and end-to-end scenarios by observable behavior. Cover happy paths, invalid inputs, retries, duplicate delivery, restarts, and dependency failures. Link tests to applicable `RG-*` requirements from `spec.md`. Never promote on missing, stale, or invalid metric evidence. Commit reproducible fixtures and summarized evidence; exclude unreviewed local benchmark output.
+Name unit tests `*Test`, integration tests `*IT`, and end-to-end scenarios by observable behavior. Cover invalid inputs, retries, duplicate delivery, restarts, and dependency failures. Link tests to applicable `RG-*` requirements. Never promote on missing, stale, or invalid metric evidence. Commit reproducible fixtures, not local runtime output.
 
 ## Commit & Pull Request Guidelines
 

@@ -5,7 +5,7 @@ import java.util.List;
 
 public record MetricPolicyStatus(
     Boolean accepted,
-    String observedResourceVersion,
+    Long observedGeneration,
     String lastDryRunAt,
     String reason,
     List<Condition> conditions) {}

@@ -319,13 +319,16 @@ spec:
   window: 2m
   interval: 20s
   timeout: 5s
+status:
+  observedGeneration: 1
+  accepted: true
 ```
 
 - `RG-POL-001`: Query templates MUST be administrator-authored and MUST accept only allowlisted, correctly escaped substitutions.
 - `RG-POL-002`: The v1 substitution set MUST be limited to revision label, namespace, release name, and validated duration window.
 - `RG-POL-003`: Policies MUST declare `LowerIsBetter` or `HigherIsBetter`.
 - `RG-POL-004`: Policies MUST define value and sample-count queries, minimum samples, window, interval, and provider timeout.
-- `RG-POL-005`: Policy status MUST report schema validation and a dry-run query result against the configured Prometheus server before the policy is accepted.
+- `RG-POL-005`: Policy status MUST report schema validation and a dry-run query result against the configured Prometheus server before the policy is accepted, and `accepted` MUST apply only when `status.observedGeneration` equals `metadata.generation`.
 - `RG-POL-006`: Developer thresholds outside administrator bounds MUST be rejected.
 - `RG-POL-007`: Policy changes MUST NOT alter an already-running AnalysisRun; the operator MUST snapshot the accepted policy version into generated resources.
 
