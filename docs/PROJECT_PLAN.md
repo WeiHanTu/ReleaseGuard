@@ -688,18 +688,32 @@ The final three-minute demo should show evidence rather than a tool tour:
 9. Kill the operator during another rollout and show recovery.
 10. Point to the exact tests and raw benchmark artifact supporting each claim.
 
-## 21. Resume claim template
+## 21. Completed-state resume claim and evidence thresholds
 
-These are placeholders and must not be used until the values are measured:
+The following is a target resume entry, not a current claim. It MUST NOT be used until the implementation is complete and every number is supported by committed raw evidence, environment metadata, and reproducible commands.
 
 > **ReleaseGuard — GitOps Progressive Delivery Control Plane**
-> Java, Spring Boot, Kubernetes, Kafka, Argo CD, Helm, Prometheus, GKE
+> Java 21, Spring Boot, Kubernetes, Fabric8/Java Operator SDK, Argo CD, Argo Rollouts, Prometheus, Kafka, PostgreSQL, Helm, Terraform, GKE
 >
-> - Built a Java Kubernetes operator and declarative deployment DSL that reconciled `ReleasePlan` resources into staged canary rollouts, metric gates, and automated rollback policies.
-> - Implemented baseline-aware Prometheus analysis that rolled back an injected faulty release in **[X seconds]** before canary exposure exceeded **[Y%]**.
-> - Validated recovery from operator restarts, unavailable metrics, Git drift, and duplicate Kafka events; reconciled **[N plans]** at **[p95 latency]** during a documented **[cluster and duration]** experiment.
+> - Built a Java Kubernetes operator and declarative release DSL that transformed Git-authored `ReleasePlan` resources into automated 5 -> 25 -> 50 -> 100% canary rollouts, using Prometheus metric gates to promote healthy releases and roll back regressions without manual intervention.
+> - Limited injected faulty-canary exposure to **no more than 5% traffic** and initiated rollback within **15 seconds of confirmed gate failure**; recorded **zero unsafe promotions across 100** Prometheus timeout, stale-metric, and insufficient-sample trials.
+> - Demonstrated idempotent recovery from operator restarts, Kubernetes API conflicts, Kafka outages, and duplicate event delivery, reconciling **[N] concurrent releases at [X]s p95/[Y]s p99** and completing a **24-hour GKE soak** with zero lost audit events, duplicate projections, or stuck releases.
 
-The technology line supports the bullets. It does not replace measurable outcomes.
+### Evidence required before using the completed-state entry
+
+| Experiment | Minimum credible result |
+|---|---|
+| Faulty canary | Inject 20% HTTP 5xx and 500 ms added latency; never progress beyond 5% traffic |
+| Rollback latency | At least 100 samples; p99 no greater than 15 seconds from confirmed failure to rollback initiation |
+| Missing metrics | 100 timeout, no-sample, and stale-metric trials; exactly zero automatic promotions |
+| Control-plane scale | Test 25, 50, 100, 200, and increasing concurrent plans until saturation; publish p50, p95, and p99 |
+| Reconciliation SLO | 99% of valid changes begin reconciliation within 10 seconds at the reported load |
+| Event pipeline | 99% of events become visible through the history API within 15 seconds under healthy dependencies |
+| Duplicate delivery | Replay at least 10,000 duplicate Kafka events; retain one projection per event ID |
+| Recovery | Kill the operator during every rollout phase; create no duplicate children or lost transitions |
+| Soak | Run 24 hours of scheduled healthy and faulty releases with no stuck releases or lost events |
+
+Do not select `[N]`, `[X]`, or `[Y]` in advance. Start at 25 concurrent plans and double load until an SLO fails, then report the highest sustained load and actual latency. Distinguish Kind, synthetic control-plane, and GKE results. Once outcome measurements exist, test counts should leave the primary resume bullets: tests describe engineering activity, while rollback latency, faulty-traffic exposure, concurrency, recovery, and event integrity describe system behavior.
 
 ## 22. Immediate implementation backlog
 
