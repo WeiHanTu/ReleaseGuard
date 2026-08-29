@@ -2,7 +2,7 @@
 
 ReleaseGuard is an implementation-in-progress GitOps progressive-delivery control plane for Kubernetes. Its target workflow lets developers describe a rollout declaratively, reconcile that desired state through a Java operator, evaluate canaries against Prometheus metrics, and retain an auditable deployment-event history in Kafka.
 
-> **Status:** Week 1 contracts and bootstrap are implemented. The operator, external integrations, deployment packaging, and operational measurements are not implemented yet. No production-readiness claim is made.
+> **Status:** Week 1 contracts and the first Week 2 reconciliation slice are implemented. Argo observation, metric-driven progression, finalization, external integrations, deployment packaging, and operational measurements are not implemented yet. No production-readiness claim is made.
 
 ## Implemented
 
@@ -10,6 +10,9 @@ ReleaseGuard is an implementation-in-progress GitOps progressive-delivery contro
 - Fabric8 models for the namespaced `ReleasePlan`, `ReleaseAction`, and `ReleaseEvent` APIs and cluster-scoped `MetricPolicy` API.
 - Deterministic semantic validation for image digests, rollout steps, bootstrap gates, approved metric thresholds, pod security, active-release updates, actions, and outbox identity.
 - Reproducible structural CRDs with status subresources and printer columns.
+- A Java Operator SDK reconciler that records generation-scoped validation before applying child resources and refuses to publish progress status when an apply fails.
+- Deterministic server-side-apply rendering for stable/canary Services, ingress-nginx Ingress, and Argo Rollout resources with owner references and operator-owned selectors.
+- Fail-closed indefinite Argo pauses until metric-gate integration exists, plus a lightweight Kubernetes API-server test proving repeated apply does not duplicate resources.
 - JUnit and jqwik contract tests, formatting checks, CRD freshness verification, wrapper validation, and dependency review.
 
 ## Build and verify
