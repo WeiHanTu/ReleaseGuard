@@ -7,6 +7,7 @@ readonly KIND_BIN="${KIND_BIN:-${REPOSITORY_ROOT}/.local/bin/kind}"
 readonly HELM_BIN="${HELM_BIN:-${REPOSITORY_ROOT}/.local/bin/helm}"
 readonly KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
 readonly OPERATOR_IMAGE="${RELEASEGUARD_OPERATOR_IMAGE:-releaseguard-operator:dev}"
+readonly GATE_IMAGE="${RELEASEGUARD_GATE_IMAGE:-releaseguard-metric-gate:dev}"
 readonly CLUSTER_NAME="${RELEASEGUARD_GITOPS_CLUSTER:-releaseguard-gitops-${RANDOM}-$$}"
 readonly OUTPUT_DIRECTORY="${RELEASEGUARD_GITOPS_OUTPUT:-${REPOSITORY_ROOT}/build/e2e/${CLUSTER_NAME}}"
 readonly BOOTSTRAP_OUTPUT="${OUTPUT_DIRECTORY}/bootstrap"
@@ -121,6 +122,7 @@ command -v "${KUBECTL_BIN}" >/dev/null
 command -v docker >/dev/null
 command -v git >/dev/null
 docker image inspect "${OPERATOR_IMAGE}" >/dev/null
+docker image inspect "${GATE_IMAGE}" >/dev/null
 mkdir -p "${OUTPUT_DIRECTORY}"
 
 if "${KIND_BIN}" get clusters | grep -Fxq "${CLUSTER_NAME}"; then
@@ -138,6 +140,7 @@ RELEASEGUARD_HELM_CLUSTER="${CLUSTER_NAME}" \
 RELEASEGUARD_HELM_OUTPUT="${BOOTSTRAP_OUTPUT}" \
 RELEASEGUARD_HELM_KEEP_CLUSTER=1 \
 RELEASEGUARD_OPERATOR_IMAGE="${OPERATOR_IMAGE}" \
+RELEASEGUARD_GATE_IMAGE="${GATE_IMAGE}" \
   "${REPOSITORY_ROOT}/tests/e2e/kind-helm-install.sh"
 export KUBECONFIG="${KUBECONFIG_PATH}"
 

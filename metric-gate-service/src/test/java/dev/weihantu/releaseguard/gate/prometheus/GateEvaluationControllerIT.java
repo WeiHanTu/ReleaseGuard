@@ -12,6 +12,7 @@ import dev.weihantu.releaseguard.gate.GateTestFixtures;
 import dev.weihantu.releaseguard.gate.api.GateApiExceptionHandler;
 import dev.weihantu.releaseguard.gate.api.GateEvaluationController;
 import dev.weihantu.releaseguard.gate.config.GateProperties;
+import dev.weihantu.releaseguard.gate.security.GateAuthenticationFilter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
 import java.net.http.HttpClient;
@@ -19,6 +20,7 @@ import java.time.Duration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -34,12 +36,17 @@ class GateEvaluationControllerIT {
         new PrometheusHttpClient(
             HttpClient.newHttpClient(),
             new ObjectMapper(),
-            new GateProperties(prometheus.baseUrl(), Duration.ofSeconds(2)),
+            new GateProperties(
+                prometheus.baseUrl(), Duration.ofSeconds(2), GateTestFixtures.AUTH_TOKEN),
             new SimpleMeterRegistry());
     GateEvaluationController controller =
         new GateEvaluationController(GateTestFixtures.service(client));
     mockMvc =
         MockMvcBuilders.standaloneSetup(controller)
+            .addFilters(
+                new GateAuthenticationFilter(
+                    new GateProperties(
+                        prometheus.baseUrl(), Duration.ofSeconds(2), GateTestFixtures.AUTH_TOKEN)))
             .setControllerAdvice(new GateApiExceptionHandler())
             .build();
   }
@@ -59,6 +66,7 @@ class GateEvaluationControllerIT {
     mockMvc
         .perform(
             post("/internal/v1/evaluations")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + GateTestFixtures.AUTH_TOKEN)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(validRequest()))
         .andExpect(status().isOk())
@@ -84,11 +92,34 @@ class GateEvaluationControllerIT {
     mockMvc
         .perform(
             post("/internal/v1/evaluations")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + GateTestFixtures.AUTH_TOKEN)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(invalid))
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.code").value("InvalidEvaluationRequest"))
         .andExpect(jsonPath("$.violations[0].path").value("thresholds.maxCanaryValue"));
+
+    assertEquals(0, prometheus.requests().size());
+  }
+
+  @Test
+  void rejectsMissingOrInvalidCredentialsBeforeCallingPrometheus() throws Exception {
+    mockMvc
+        .perform(
+            post("/internal/v1/evaluations")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(validRequest()))
+        .andExpect(status().isUnauthorized())
+        .andExpect(jsonPath("$.code").value("Unauthorized"));
+
+    mockMvc
+        .perform(
+            post("/internal/v1/evaluations")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer definitely-not-the-token")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(validRequest()))
+        .andExpect(status().isUnauthorized())
+        .andExpect(jsonPath("$.code").value("Unauthorized"));
 
     assertEquals(0, prometheus.requests().size());
   }

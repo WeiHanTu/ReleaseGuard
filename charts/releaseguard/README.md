@@ -1,15 +1,19 @@
 # ReleaseGuard Helm chart
 
-This chart installs the ReleaseGuard operator and its four CRDs. Argo Rollouts is an external dependency and must already be installed. The chart grants cluster-wide reconciliation because the current operator watches `ReleasePlan` resources in every namespace.
+This chart installs the ReleaseGuard operator, metric-gate service, and four CRDs. Argo Rollouts and Prometheus are external dependencies. The chart grants cluster-wide reconciliation because the current operator watches `ReleasePlan` resources in every namespace.
 
 Helm installs files under `crds/` only when a CRD is absent; it does not upgrade existing CRDs. After an API-model change, run `./gradlew :api-model:syncCrds`, review both generated copies, and apply `config/crd/` before upgrading an existing release.
 
-Build the local image, load it into the target cluster, and install:
+Build both local images, create the gate's bearer-token Secret, load the images into the target cluster, and install:
 
 ```bash
 docker build -t releaseguard-operator:dev .
+docker build -f metric-gate-service/Dockerfile -t releaseguard-metric-gate:dev .
+kubectl create namespace releaseguard-system
+kubectl -n releaseguard-system create secret generic releaseguard-metric-gate-auth \
+  --from-literal=token="$(openssl rand -hex 32)"
 helm upgrade --install releaseguard charts/releaseguard \
-  --namespace releaseguard-system --create-namespace
+  --namespace releaseguard-system
 ```
 
 For a published release, use an immutable digest:
@@ -18,9 +22,13 @@ For a published release, use an immutable digest:
 helm upgrade --install releaseguard charts/releaseguard \
   --namespace releaseguard-system --create-namespace \
   --set image.repository=ghcr.io/weihantu/releaseguard-operator \
-  --set image.digest=sha256:<64-hex-character-digest>
+  --set image.digest=sha256:<operator-digest> \
+  --set metricGate.image.repository=ghcr.io/weihantu/releaseguard-metric-gate \
+  --set metricGate.image.digest=sha256:<metric-gate-digest>
 ```
 
-The pod runs as UID/GID 65532 with a read-only root filesystem, all Linux capabilities dropped, and the runtime-default seccomp profile. `/healthz` reports process liveness; `/readyz` becomes healthy only after the Java Operator SDK starts.
+The pods run as UID/GID 65532 with read-only root filesystems, all Linux capabilities dropped, and the runtime-default seccomp profile. The metric gate does not mount a service-account token and is exposed only through a `ClusterIP` Service. Its evaluation API requires the token from `metricGate.auth.existingSecret`; the chart references that Secret but never creates or renders its contents.
 
-Only one replica is accepted. The Deployment uses `Recreate` so an upgrade cannot briefly run competing reconcilers before leader election is implemented.
+The operator's `/healthz` reports process liveness and `/readyz` becomes healthy only after Java Operator SDK startup. The metric gate uses Spring Boot liveness and readiness probes. Set `metricGate.prometheusBaseUrl` to the cluster-local Prometheus URL before evaluating a release.
+
+Only one operator replica is accepted. The operator Deployment uses `Recreate` so an upgrade cannot briefly run competing reconcilers before leader election is implemented.

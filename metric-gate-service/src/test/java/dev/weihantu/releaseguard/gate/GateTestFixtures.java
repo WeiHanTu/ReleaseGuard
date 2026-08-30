@@ -17,6 +17,7 @@ import java.time.Instant;
 import java.util.Map;
 
 public final class GateTestFixtures {
+  public static final String AUTH_TOKEN = "test-only-token-with-at-least-32-bytes";
   public static final Instant EVALUATION_TIME = Instant.parse("2026-08-26T21:00:00Z");
   public static final String CANARY_VALUE_QUERY =
       "sum(rate(requests{revision=\"checkout-canary\"}[2m]))";
@@ -85,7 +86,7 @@ public final class GateTestFixtures {
         renderer,
         prometheus,
         new EvidenceDigester(objectMapper),
-        new GateProperties(URI.create("http://127.0.0.1:9090"), Duration.ofSeconds(10)),
+        new GateProperties(URI.create("http://127.0.0.1:9090"), Duration.ofSeconds(10), AUTH_TOKEN),
         new SimpleMeterRegistry());
   }
 

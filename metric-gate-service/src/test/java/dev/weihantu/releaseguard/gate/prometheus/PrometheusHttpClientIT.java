@@ -31,7 +31,8 @@ class PrometheusHttpClientIT {
         new PrometheusHttpClient(
             HttpClient.newHttpClient(),
             new ObjectMapper(),
-            new GateProperties(server.baseUrl(), Duration.ofSeconds(2)),
+            new GateProperties(
+                server.baseUrl(), Duration.ofSeconds(2), GateTestFixtures.AUTH_TOKEN),
             new SimpleMeterRegistry());
   }
 

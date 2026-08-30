@@ -1,4 +1,10 @@
 ReleaseGuard operator {{ .Chart.AppVersion }} was installed in {{ .Release.Namespace }}.
 
-The chart intentionally permits exactly one replica. Leader election is not implemented yet.
+The chart intentionally permits exactly one operator replica. Leader election is not implemented yet.
 For release environments, set image.digest to the published sha256 digest instead of relying on a tag.
+{{- if .Values.metricGate.enabled }}
+
+Metric gate service: {{ include "releaseguard.metricGateFullname" . }}:{{ .Values.metricGate.service.port }}
+Authentication Secret: {{ .Values.metricGate.auth.existingSecret }} (key {{ .Values.metricGate.auth.tokenKey }})
+The chart references this existing Secret and does not create it.
+{{- end }}

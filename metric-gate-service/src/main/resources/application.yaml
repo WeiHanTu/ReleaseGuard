@@ -2,6 +2,7 @@ releaseguard:
   gate:
     prometheus-base-url: ${PROMETHEUS_BASE_URL:http://prometheus:9090}
     request-timeout: ${GATE_REQUEST_TIMEOUT:10s}
+    auth-token: ${RELEASEGUARD_GATE_AUTH_TOKEN}
 
 management:
   endpoints:

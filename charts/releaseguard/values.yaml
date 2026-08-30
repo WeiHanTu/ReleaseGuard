@@ -24,6 +24,29 @@ operator:
     deadline: 60s
     requeueInterval: 1s
 
+metricGate:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: releaseguard-metric-gate
+    tag: dev
+    digest: ""
+    pullPolicy: IfNotPresent
+  service:
+    port: 8080
+  prometheusBaseUrl: http://prometheus:9090
+  requestTimeout: 10s
+  auth:
+    existingSecret: releaseguard-metric-gate-auth
+    tokenKey: token
+  resources:
+    requests:
+      cpu: 100m
+      memory: 192Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
 resources:
   requests:
     cpu: 100m

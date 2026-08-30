@@ -31,7 +31,9 @@ readonly digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 "${helm_bin}" template releaseguard "${CHART}" \
   --namespace releaseguard-system \
   --set image.repository=ghcr.io/weihantu/releaseguard-operator \
-  --set-string "image.digest=${digest}" >"${digest_manifest}"
+  --set-string "image.digest=${digest}" \
+  --set metricGate.image.repository=ghcr.io/weihantu/releaseguard-metric-gate \
+  --set-string "metricGate.image.digest=${digest}" >"${digest_manifest}"
 
 for crd in "${REPOSITORY_ROOT}"/config/crd/*.yml; do
   chart_crd="${CHART}/crds/$(basename "${crd}")"
@@ -52,7 +54,23 @@ grep -Fq 'resources: ["releaseplans/status"]' "${default_manifest}"
 grep -Fq 'resources: ["metricpolicies"]' "${default_manifest}"
 grep -Fq 'resources: ["rollouts/status"]' "${default_manifest}"
 grep -Fq 'image: "releaseguard-operator:dev"' "${default_manifest}"
+grep -Fq 'name: releaseguard-metric-gate' "${default_manifest}"
+grep -Fq 'app.kubernetes.io/component: metric-gate' "${default_manifest}"
+grep -Fq 'image: "releaseguard-metric-gate:dev"' "${default_manifest}"
+grep -Fq 'automountServiceAccountToken: false' "${default_manifest}"
+grep -Fq 'name: RELEASEGUARD_GATE_AUTH_TOKEN' "${default_manifest}"
+grep -Fq 'name: "releaseguard-metric-gate-auth"' "${default_manifest}"
+grep -Fq 'key: "token"' "${default_manifest}"
+grep -Fq 'path: /actuator/health/liveness' "${default_manifest}"
+grep -Fq 'path: /actuator/health/readiness' "${default_manifest}"
+grep -Fq 'type: ClusterIP' "${default_manifest}"
 grep -Fq "image: \"ghcr.io/weihantu/releaseguard-operator@${digest}\"" "${digest_manifest}"
+grep -Fq "image: \"ghcr.io/weihantu/releaseguard-metric-gate@${digest}\"" "${digest_manifest}"
+
+if grep -Fq 'kind: Secret' "${default_manifest}"; then
+  echo "Chart rendered secret material instead of referencing an existing Secret" >&2
+  exit 1
+fi
 
 if grep -Eq 'verbs:.*\*|resources:.*\*|apiGroups:.*\*' "${default_manifest}"; then
   echo "Rendered RBAC contains a wildcard" >&2
@@ -72,5 +90,19 @@ if "${helm_bin}" template releaseguard "${CHART}" \
   exit 1
 fi
 
-printf 'Verified Helm chart with %s: CRD freshness, schema guards, digest rendering, RBAC, probes, and pod security\n' \
+if "${helm_bin}" template releaseguard "${CHART}" \
+  --set-string metricGate.auth.existingSecret= \
+  >"${temporary_directory}/missing-gate-secret.out" 2>&1; then
+  echo "Chart accepted an empty metric-gate Secret name" >&2
+  exit 1
+fi
+
+if "${helm_bin}" template releaseguard "${CHART}" \
+  --set-string metricGate.requestTimeout=61s \
+  >"${temporary_directory}/invalid-gate-timeout.out" 2>&1; then
+  echo "Chart accepted a metric-gate timeout above the service maximum" >&2
+  exit 1
+fi
+
+printf 'Verified Helm chart with %s: CRD freshness, schema guards, both images, external Secret reference, RBAC, probes, and pod security\n' \
   "$("${helm_bin}" version --short)"

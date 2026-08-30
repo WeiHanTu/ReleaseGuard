@@ -2,7 +2,7 @@
 
 ## Current boundary
 
-The metric-gate service implements the stateless portions of `RG-GATE-001` through `RG-GATE-011`. It does not yet implement the AnalysisRun limits and pause behavior required to complete `RG-GATE-010`, shift traffic, count consecutive results, or mutate a `ReleasePlan`. Argo Rollouts will own those responsibilities after AnalysisRun integration. The endpoint is not yet packaged or authenticated for cluster deployment; run it only in a trusted local development environment.
+The metric-gate service implements the stateless portions of `RG-GATE-001` through `RG-GATE-011`. It does not yet implement the AnalysisRun limits and pause behavior required to complete `RG-GATE-010`, shift traffic, count consecutive results, or mutate a `ReleasePlan`. Argo Rollouts will own those responsibilities after AnalysisRun integration. The service is packaged and authenticated for cluster-internal deployment, but it is not yet called by generated AnalysisRuns.
 
 ```mermaid
 flowchart LR
@@ -31,6 +31,7 @@ Each revision uses separate value and sample-count PromQL queries. Substitutions
 ## Run and verify
 
 ```bash
+RELEASEGUARD_GATE_AUTH_TOKEN="$(openssl rand -hex 32)" \
 PROMETHEUS_BASE_URL=http://127.0.0.1:9090 \
   ./gradlew :metric-gate-service:run
 
@@ -38,7 +39,11 @@ PROMETHEUS_BASE_URL=http://127.0.0.1:9090 \
 curl --fail http://127.0.0.1:8080/actuator/health
 ```
 
-The default overall deadline is 10 seconds and can be changed with `GATE_REQUEST_TIMEOUT` up to one minute. `/actuator/prometheus` exposes query latency/outcomes, gate decisions/reasons, JVM, process, and HTTP server metrics without release IDs or revisions as labels.
+The default overall deadline is 10 seconds and can be changed with `GATE_REQUEST_TIMEOUT` up to one minute. `POST /internal/v1/evaluations` requires `Authorization: Bearer <token>`; missing and invalid credentials receive the same `401` response. Tokens must contain at least 32 UTF-8 bytes and are redacted from configuration rendering. Health and metrics remain unauthenticated for Kubernetes probes and cluster-local Prometheus scraping.
+
+The Helm chart deploys the service behind a `ClusterIP`, disables service-account-token mounting, and reads the bearer token through a reference to `metricGate.auth.existingSecret`. It never creates the Secret or embeds the token in a Deployment. `/actuator/prometheus` exposes query latency/outcomes, gate decisions/reasons, JVM, process, and HTTP server metrics without release IDs or revisions as labels.
+
+The current Kind profile does not terminate TLS or install a NetworkPolicy, so the bearer token travels over the cluster network. That is acceptable only for the documented disposable local environment. A cloud deployment must add mesh or service TLS and namespace-scoped network policy before this boundary can be called production-safe.
 
 ## Evidence integrity
 

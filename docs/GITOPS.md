@@ -24,6 +24,8 @@ For a real environment, fork the Application manifest, change `repoURL`, `target
 ```bash
 RELEASEGUARD_OPERATOR_IMAGE=releaseguard-operator:dev \
   ./tests/container/operator-image.sh
+RELEASEGUARD_GATE_IMAGE=releaseguard-metric-gate:dev \
+  ./tests/container/metric-gate-image.sh
 ./scripts/install-helm.sh
 ./scripts/install-kind.sh
 ./tests/e2e/kind-gitops.sh

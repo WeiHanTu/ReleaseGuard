@@ -41,7 +41,7 @@ jobs:
         run: ./gradlew clean check --no-daemon
 
   packaging:
-    name: Operator image, Helm, and GitOps
+    name: Images, Helm, and GitOps
     runs-on: ubuntu-latest
     timeout-minutes: 25
     needs: wrapper-validation
@@ -52,6 +52,10 @@ jobs:
         env:
           RELEASEGUARD_OPERATOR_IMAGE: releaseguard-operator:dev
         run: ./tests/container/operator-image.sh
+      - name: Build and verify the hardened metric-gate image
+        env:
+          RELEASEGUARD_GATE_IMAGE: releaseguard-metric-gate:dev
+        run: ./tests/container/metric-gate-image.sh
       - name: Install checksum-pinned Helm
         run: ./scripts/install-helm.sh
       - name: Lint and verify the Helm chart

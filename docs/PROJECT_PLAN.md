@@ -20,9 +20,9 @@ Installing Argo CD, Kafka, and Grafana is not sufficient. ReleaseGuard must own 
 
 ## 2. Status and evidence policy
 
-Current status: **Week 3 complete; Week 4 metric-gate contract implemented, AnalysisRun integration next**.
+Current status: **Week 3 complete; Week 4 metric-gate contract and cluster packaging implemented, AnalysisRun integration next**.
 
-The Java 21 multi-module build, four API models, semantic validators, deterministic CRD generation, architecture decisions, contract tests, Week 2 operator control loop, hardened operator image, Helm installation path, Argo CD Git synchronization, offline plan CLI, and the stateless metric-gate service contract are implemented. Argo AnalysisRun integration and automated rollout outcomes remain planned. Numbers marked as targets are acceptance criteria, not benchmark results or resume claims.
+The Java 21 multi-module build, four API models, semantic validators, deterministic CRD generation, architecture decisions, contract tests, Week 2 operator control loop, hardened operator and metric-gate images, Helm installation path, Argo CD Git synchronization, offline plan CLI, and the authenticated stateless metric-gate service are implemented. Argo AnalysisRun integration and automated rollout outcomes remain planned. Numbers marked as targets are acceptance criteria, not benchmark results or resume claims.
 
 Evidence rules:
 
@@ -592,10 +592,11 @@ Week 3 exit achieved: a Git change reaches the cluster without an imperative dep
 
 - [x] Implement fake Prometheus and gate-service contract.
 - [x] Add error-rate, p95-latency, sample-count, and missing-data policies.
+- [x] Package and authenticate the gate for Helm-managed cluster deployment.
 - Connect AnalysisRun to gate decisions.
 - Automate healthy promotion and faulty rollback.
 
-Implemented evidence: the Spring Boot internal API executes distinct canary/stable value and sample-count queries through a bounded Java HTTP client, validates administrator policy bounds and safe substitution contexts, and implements both `LowerIsBetter` and `HigherIsBetter` predicates. Empty vectors, unexpected series, partial responses, non-finite values, stale observations, timeouts, malformed responses, provider errors, invalid sample counts, and insufficient samples all return machine-readable `Inconclusive` outcomes. Completed threshold breaches return `Fail`. Canonical request, query, observation, and decision evidence produces a SHA-256 digest; low-cardinality Micrometer metrics, health probes, and graceful shutdown are enabled. Thirty focused tests include a purpose-built fake Prometheus HTTP server and the full controller-to-provider contract. This is service-level local evidence, not automated rollout evidence.
+Implemented evidence: the Spring Boot internal API executes distinct canary/stable value and sample-count queries through a bounded Java HTTP client, validates administrator policy bounds and safe substitution contexts, and implements both `LowerIsBetter` and `HigherIsBetter` predicates. Empty vectors, unexpected series, partial responses, non-finite values, stale observations, timeouts, malformed responses, provider errors, invalid sample counts, and insufficient samples all return machine-readable `Inconclusive` outcomes. Completed threshold breaches return `Fail`. Canonical request, query, observation, and decision evidence produces a SHA-256 digest; low-cardinality Micrometer metrics, health probes, and graceful shutdown are enabled. Thirty-four focused tests include a purpose-built fake Prometheus HTTP server, the full controller-to-provider contract, uniform unauthorized responses, minimum token strength, and token redaction. A second pinned Distroless image is bounded to 50 MiB of application layers; Helm deploys it without a service-account token behind a `ClusterIP`, injects authentication through an existing Secret reference, and exposes probes and metrics. The clean Kind path verifies live startup, unauthenticated rejection, authorized request admission, and absence of inline credential material. This is cluster deployment and service-level evidence, not automated rollout evidence.
 
 Exit pending: good and bad releases do not yet drive repeatable Argo promotion and rollback outcomes.
 
