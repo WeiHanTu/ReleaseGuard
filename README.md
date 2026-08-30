@@ -60,7 +60,7 @@ RELEASEGUARD_OPERATOR_IMAGE=releaseguard-operator:dev ./tests/container/operator
 ./tests/e2e/kind-helm-install.sh
 ```
 
-The local image measured 86,672,328 bytes on Docker Desktop 28.4.0 for `linux/arm64`, including 24,130,901 bytes above its runtime base; this is packaging evidence, not a performance benchmark. The chart currently enforces one replica and a `Recreate` deployment strategy because leader election is not implemented.
+The local image measured 86,672,799 bytes on Docker Desktop 28.4.0 for `linux/arm64`, including 24,131,372 bytes above its runtime base; this is packaging evidence, not a performance benchmark. The chart currently enforces one replica and a `Recreate` deployment strategy because leader election is not implemented.
 
 Example resources are under [`config/examples`](config/examples), generated CRDs under [`config/crd`](config/crd), and accepted architecture decisions under [`docs/adr`](docs/adr).
 
