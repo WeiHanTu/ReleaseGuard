@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-Treat `spec.md` as the normative behavior contract and `docs/PROJECT_PLAN.md` as the sequencing and evidence plan. Implemented Java code lives in `api-model/` and `release-operator/`; the other Gradle modules remain scaffolds. Keep Kubernetes resources in `config/`, future Helm packaging in `charts/releaseguard/`, deployment definitions in `deploy/`, GKE infrastructure in `terraform/gke/`, cross-module tests in `tests/`, and operational material in `docs/`.
+Treat `spec.md` as the normative behavior contract and `docs/PROJECT_PLAN.md` as the sequencing and evidence plan. Implemented Java code lives in `api-model/`, `release-operator/`, and `cli/`; the service modules remain scaffolds. Keep Kubernetes resources in `config/`, Helm packaging in `charts/releaseguard/`, deployment definitions in `deploy/`, GKE infrastructure in `terraform/gke/`, cross-module tests in `tests/`, and operational material in `docs/`.
 
 ## Build, Test, and Development Commands
 

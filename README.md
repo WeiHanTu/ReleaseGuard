@@ -2,13 +2,14 @@
 
 ReleaseGuard is an implementation-in-progress GitOps progressive-delivery control plane for Kubernetes. Its target workflow lets developers describe a rollout declaratively, reconcile that desired state through a Java operator, evaluate canaries against Prometheus metrics, and retain an auditable deployment-event history in Kafka.
 
-> **Status:** Week 1 contracts, the Week 2 operator-control-loop milestone, and the Week 3 packaging and GitOps slices are implemented. CLI rendering, automated metric-driven progression, external data services, and production operations are not implemented yet. No production-readiness claim is made.
+> **Status:** Week 1 contracts, the Week 2 operator-control-loop milestone, and Week 3 packaging, GitOps, and offline CLI validation/rendering are implemented. Automated metric-driven progression, external data services, and production operations are not implemented yet. No production-readiness claim is made.
 
 ## Implemented
 
 - A pinned Java 21 and Gradle 9.7.1 six-module build.
 - Fabric8 models for the namespaced `ReleasePlan`, `ReleaseAction`, and `ReleaseEvent` APIs and cluster-scoped `MetricPolicy` API.
 - Deterministic semantic validation for image digests, rollout steps, bootstrap gates, approved metric thresholds, pod security, active-release updates, actions, and outbox identity.
+- A distributable `releaseguard` CLI for fail-closed, cluster-free plan validation and deterministic YAML/JSON rendering through the operator's production renderer, including explicit or sibling policy resolution and nonzero failure status.
 - Reproducible structural CRDs with status subresources and printer columns.
 - A Java Operator SDK reconciler that records generation-scoped validation before applying child resources and refuses to publish progress status when an apply fails.
 - Deterministic server-side-apply rendering for stable/canary Services, ingress-nginx Ingress, and Argo Rollout resources with owner references and generation-stable workload selectors.
@@ -51,6 +52,18 @@ Run the live Argo finalizer scenario with Docker and `kubectl` available:
 
 This test runs the real Argo Rollouts controller but not ingress-nginx, so it verifies control-plane state, ready endpoints, and generated Ingress weights rather than request routing.
 Because metric gates arrive in Week 4, the test explicitly patches the bootstrap phase to `Succeeded` before creating its second `ReleasePlan` generation; it does not claim automated promotion.
+
+Build and run the offline CLI:
+
+```bash
+./gradlew :cli:installDist
+./cli/build/install/releaseguard/bin/releaseguard plan validate \
+  -f config/examples/releaseplan-checkout.yaml
+./cli/build/install/releaseguard/bin/releaseguard plan render \
+  -f config/examples/releaseplan-checkout.yaml -o json
+```
+
+The CLI automatically discovers `MetricPolicy` YAML beside the plan; use repeated `-p` flags for policies elsewhere. Git-authored plans do not have Kubernetes UIDs, so offline rendering derives a deterministic preview UID and warns before the output is applied. Pass `--uid` and `--generation` to render against an exact live identity. Neither command contacts or mutates a cluster.
 
 Build and inspect the runtime image, verify the chart, and reproduce the clean-cluster install:
 

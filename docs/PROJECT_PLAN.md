@@ -20,9 +20,9 @@ Installing Argo CD, Kafka, and Grafana is not sufficient. ReleaseGuard must own 
 
 ## 2. Status and evidence policy
 
-Current status: **Week 2 roadmap milestone complete; Week 3 packaging and GitOps synchronization implemented, CLI validation next**.
+Current status: **Week 3 roadmap milestone complete; Week 4 metric gates next**.
 
-The Java 21 multi-module build, four API models, semantic validators, deterministic CRD generation, architecture decisions, contract tests, Week 2 operator control loop, hardened operator image, Helm installation path, and Argo CD Git synchronization are implemented. CLI rendering and Week 4 onward remain planned. Numbers marked as targets are acceptance criteria, not benchmark results or resume claims.
+The Java 21 multi-module build, four API models, semantic validators, deterministic CRD generation, architecture decisions, contract tests, Week 2 operator control loop, hardened operator image, Helm installation path, Argo CD Git synchronization, and offline plan CLI are implemented. Week 4 onward remains planned. Numbers marked as targets are acceptance criteria, not benchmark results or resume claims.
 
 Evidence rules:
 
@@ -582,11 +582,11 @@ Exit achieved: unchanged, duplicate-event, restart, deletion, and conflict-injec
 - [x] Add a production-oriented operator Dockerfile and Helm chart.
 - [x] Bootstrap Kind, Argo CD, and Argo Rollouts.
 - [x] Add environment path and drift test.
-- Add CLI plan validation and rendering.
+- [x] Add CLI plan validation and rendering.
 
-Implemented packaging and GitOps evidence: both Java 21 base images are pinned by multi-architecture digest; the final Distroless image runs as UID/GID 65532 and automated inspection rejects a shell, source/build files, or more than 50 MiB of application layers above the architecture-specific runtime base. The chart vendors byte-identical generated CRDs, renders either a local tag or release digest, grants explicit verbs without RBAC wildcards, uses Restricted-profile security settings, and refuses more than one replica until leader election exists. A clean Kubernetes v1.35.0 Kind test installs Argo Rollouts v1.9.1 and the chart with Helm v4.2.4, observes live and ready endpoints, proves the service account cannot read Secrets or delete Namespaces, and reconciles a `ReleasePlan` into a Rollout from the in-cluster container. A second path installs checksum-pinned Argo CD v3.5.2, synchronizes the committed local environment from a disposable Git remote, observes a Git-only follow-up commit, and restores unauthorized live metadata drift. One local arm64 run measured 4-second Git synchronization and 3-second drift recovery with five-second test cache settings. These are reproducible local observations, not published-image, vulnerability-scan, traffic-routing, scale, or production results.
+Implemented packaging and GitOps evidence: both Java 21 base images are pinned by multi-architecture digest; the final Distroless image runs as UID/GID 65532 and automated inspection rejects a shell, source/build files, or more than 50 MiB of application layers above the architecture-specific runtime base. The chart vendors byte-identical generated CRDs, renders either a local tag or release digest, grants explicit verbs without RBAC wildcards, uses Restricted-profile security settings, and refuses more than one replica until leader election exists. A clean Kubernetes v1.35.0 Kind test installs Argo Rollouts v1.9.1 and the chart with Helm v4.2.4, observes live and ready endpoints, proves the service account cannot read Secrets or delete Namespaces, and reconciles a `ReleasePlan` into a Rollout from the in-cluster container. A second path installs checksum-pinned Argo CD v3.5.2, synchronizes the committed local environment from a disposable Git remote, observes a Git-only follow-up commit, and restores unauthorized live metadata drift. One local arm64 run measured 4-second Git synchronization and 3-second drift recovery with five-second test cache settings. The distributable CLI applies the same release-environment validators and operator renderer offline, discovers sibling or explicit policies, emits deterministic YAML or JSON, accepts exact UID/generation inputs, and returns distinct nonzero status for usage, validation, and input failures. These are reproducible local observations, not published-image, vulnerability-scan, traffic-routing, scale, or production results.
 
-GitOps exit achieved: a Git change reaches the cluster without an imperative deployment command. Week 3 remains open for CLI validation and rendering.
+Week 3 exit achieved: a Git change reaches the cluster without an imperative deployment command, and plans can be validated and rendered without cluster mutation.
 
 ### Week 4: metric gates
 
