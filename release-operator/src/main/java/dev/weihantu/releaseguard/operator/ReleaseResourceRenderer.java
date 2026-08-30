@@ -94,7 +94,8 @@ public final class ReleaseResourceRenderer {
     for (ReleasePlanSpec.Step step : spec.rollout().steps()) {
       steps.add(Map.of("setWeight", step.weight()));
       if (step.weight() < 100) {
-        // Metric gates arrive in Week 4. An indefinite pause is fail-closed until then.
+        // AnalysisRun integration is not enabled yet. An indefinite pause is fail-closed until
+        // then.
         steps.add(Map.of("pause", Map.of()));
       }
     }

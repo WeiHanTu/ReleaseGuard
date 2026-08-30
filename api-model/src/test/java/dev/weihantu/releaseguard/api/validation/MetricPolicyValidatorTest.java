@@ -65,6 +65,20 @@ class MetricPolicyValidatorTest {
     assertTrue(validator.validate(invalid).hasRequirement("RG-POL-004"));
   }
 
+  @Test
+  void rejectsUnsafeSubstitutionContexts() {
+    MetricPolicySpec invalid =
+        copyWithQueries(
+            "sum(rate(requests{revision={{revision}}}[{{window}}]))",
+            "sum(increase(requests{revision=\"{{revision}}\"}[\"{{window}}\"]))");
+
+    ValidationResult result = validator.validate(invalid);
+
+    assertTrue(result.hasRequirement("RG-POL-001"));
+    assertTrue(result.errors().stream().anyMatch(error -> error.message().contains("revision")));
+    assertTrue(result.errors().stream().anyMatch(error -> error.message().contains("window")));
+  }
+
   private static MetricPolicySpec copyWithQueries(String valueQuery, String sampleQuery) {
     MetricPolicySpec source = TestFixtures.policy();
     return new MetricPolicySpec(

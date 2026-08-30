@@ -545,10 +545,19 @@ Request fields:
   "releaseId": "4f8f...:4",
   "step": 1,
   "mode": "Canary",
-  "policy": {},
+  "namespace": "demo",
+  "releaseName": "checkout",
+  "policy": {
+    "name": "http-error-ratio",
+    "resourceVersion": "817263",
+    "spec": {}
+  },
   "stableRevision": "checkout-7b8d9",
   "canaryRevision": "checkout-1ac42",
-  "thresholds": {},
+  "thresholds": {
+    "maxCanaryValue": 0.01,
+    "maxDeltaFromStable": 0.005
+  },
   "evaluationTime": "2026-08-26T21:00:00Z"
 }
 ```

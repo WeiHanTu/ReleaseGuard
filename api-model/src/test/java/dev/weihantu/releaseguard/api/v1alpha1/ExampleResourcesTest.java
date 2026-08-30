@@ -21,11 +21,13 @@ class ExampleResourcesTest {
   @Test
   void committedExamplesDeserializeAndPassSemanticValidation() throws IOException {
     MetricPolicy policy = read("metricpolicy-http-errors.yaml", MetricPolicy.class);
+    MetricPolicy latencyPolicy = read("metricpolicy-request-p95.yaml", MetricPolicy.class);
     ReleasePlan plan = read("releaseplan-checkout.yaml", ReleasePlan.class);
     ReleaseAction action = read("releaseaction-abort.yaml", ReleaseAction.class);
     ReleaseEvent event = read("releaseevent-step-passed.yaml", ReleaseEvent.class);
 
     assertTrue(new MetricPolicyValidator().validate(policy.getSpec()).isValid());
+    assertTrue(new MetricPolicyValidator().validate(latencyPolicy.getSpec()).isValid());
     assertTrue(
         new ReleasePlanValidator()
             .validate(

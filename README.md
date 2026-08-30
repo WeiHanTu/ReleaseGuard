@@ -2,7 +2,7 @@
 
 ReleaseGuard is an implementation-in-progress GitOps progressive-delivery control plane for Kubernetes. Its target workflow lets developers describe a rollout declaratively, reconcile that desired state through a Java operator, evaluate canaries against Prometheus metrics, and retain an auditable deployment-event history in Kafka.
 
-> **Status:** Week 1 contracts, the Week 2 operator-control-loop milestone, and Week 3 packaging, GitOps, and offline CLI validation/rendering are implemented. Automated metric-driven progression, external data services, and production operations are not implemented yet. No production-readiness claim is made.
+> **Status:** Weeks 1-3 and the first Week 4 metric-gate service slice are implemented. AnalysisRun integration, automated metric-driven progression, external audit services, and production operations are not implemented yet. No production-readiness claim is made.
 
 ## Implemented
 
@@ -10,6 +10,9 @@ ReleaseGuard is an implementation-in-progress GitOps progressive-delivery contro
 - Fabric8 models for the namespaced `ReleasePlan`, `ReleaseAction`, and `ReleaseEvent` APIs and cluster-scoped `MetricPolicy` API.
 - Deterministic semantic validation for image digests, rollout steps, bootstrap gates, approved metric thresholds, pod security, active-release updates, actions, and outbox identity.
 - A distributable `releaseguard` CLI for fail-closed, cluster-free plan validation and deterministic YAML/JSON rendering through the operator's production renderer, including explicit or sibling policy resolution and nonzero failure status.
+- A Spring Boot metric-gate API that evaluates separate stable/canary value and sample-count queries, applies direction-aware absolute and baseline thresholds, and returns deterministic `Pass`, `Fail`, or `Inconclusive` decisions with canonical SHA-256 evidence digests.
+- A bounded Prometheus HTTP client that classifies empty, multiple-series, partial, malformed, non-finite, stale, timed-out, and failed observations without translating missing monitoring into success.
+- Purpose-built fake-Prometheus integration tests, an administrator-bounded p95-latency policy, Actuator health probes, Prometheus-format service metrics, and graceful shutdown.
 - Reproducible structural CRDs with status subresources and printer columns.
 - A Java Operator SDK reconciler that records generation-scoped validation before applying child resources and refuses to publish progress status when an apply fails.
 - Deterministic server-side-apply rendering for stable/canary Services, ingress-nginx Ingress, and Argo Rollout resources with owner references and generation-stable workload selectors.
@@ -51,7 +54,7 @@ Run the live Argo finalizer scenario with Docker and `kubectl` available:
 ```
 
 This test runs the real Argo Rollouts controller but not ingress-nginx, so it verifies control-plane state, ready endpoints, and generated Ingress weights rather than request routing.
-Because metric gates arrive in Week 4, the test explicitly patches the bootstrap phase to `Succeeded` before creating its second `ReleasePlan` generation; it does not claim automated promotion.
+Because AnalysisRun integration is not complete, the test explicitly patches the bootstrap phase to `Succeeded` before creating its second `ReleasePlan` generation; it does not claim automated promotion.
 
 Build and run the offline CLI:
 
@@ -64,6 +67,15 @@ Build and run the offline CLI:
 ```
 
 The CLI automatically discovers `MetricPolicy` YAML beside the plan; use repeated `-p` flags for policies elsewhere. Git-authored plans do not have Kubernetes UIDs, so offline rendering derives a deterministic preview UID and warns before the output is applied. Pass `--uid` and `--generation` to render against an exact live identity. Neither command contacts or mutates a cluster.
+
+Run the metric-gate service against a Prometheus-compatible endpoint:
+
+```bash
+PROMETHEUS_BASE_URL=http://127.0.0.1:9090 \
+  ./gradlew :metric-gate-service:run
+```
+
+The internal API is `POST /internal/v1/evaluations`; health and metrics are exposed at `/actuator/health` and `/actuator/prometheus`. See [`docs/METRIC_GATES.md`](docs/METRIC_GATES.md) for the request contract, decision table, reason codes, and current security/deployment boundary.
 
 Build and inspect the runtime image, verify the chart, and reproduce the clean-cluster install:
 

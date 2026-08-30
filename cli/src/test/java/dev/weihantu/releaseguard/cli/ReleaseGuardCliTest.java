@@ -80,6 +80,23 @@ class ReleaseGuardCliTest {
   }
 
   @Test
+  void ignoresInvalidSiblingPoliciesThatThePlanDoesNotReference() throws IOException {
+    Path plan = copyExample("releaseplan-checkout.yaml", "releaseplan.yaml");
+    copyExample("metricpolicy-http-errors.yaml", "metricpolicy.yaml");
+    Path unrelated = copyExample("metricpolicy-http-errors.yaml", "unrelated-policy.yaml");
+    Files.writeString(
+        unrelated,
+        Files.readString(unrelated)
+            .replace("name: http-error-ratio", "name: unrelated-invalid-policy")
+            .replace("minimumSamples: 100", "minimumSamples: 0"));
+
+    CommandResult result = run("plan", "validate", "-f", plan.toString());
+
+    assertEquals(ExitCode.SUCCESS, result.exitCode());
+    assertTrue(result.standardOutput().contains("1 accepted policies"));
+  }
+
+  @Test
   void rendersTheOperatorResourceSetDeterministicallyWithExplicitIdentity() {
     Path plan = examples.resolve("releaseplan-checkout.yaml");
     String[] arguments = {

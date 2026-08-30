@@ -54,7 +54,19 @@ public final class MetricPolicyValidator {
     Set<String> substitutions = new HashSet<>();
     StringBuilder unmatched = new StringBuilder();
     while (matcher.find()) {
-      substitutions.add(matcher.group(1));
+      String substitution = matcher.group(1);
+      substitutions.add(substitution);
+      boolean quoted = insideQuotedString(template, matcher.start());
+      if ("window".equals(substitution) && quoted) {
+        add(errors, "RG-POL-001", path, "window substitution must not be quoted");
+      }
+      if (!"window".equals(substitution) && !quoted) {
+        add(
+            errors,
+            "RG-POL-001",
+            path,
+            substitution + " substitution must be inside a string literal");
+      }
       matcher.appendReplacement(unmatched, "");
     }
     matcher.appendTail(unmatched);
@@ -69,6 +81,24 @@ public final class MetricPolicyValidator {
     if (!substitutions.containsAll(REQUIRED_SUBSTITUTIONS)) {
       add(errors, "RG-POL-004", path, "query template must use revision and window substitutions");
     }
+  }
+
+  private static boolean insideQuotedString(String value, int endExclusive) {
+    boolean quoted = false;
+    for (int index = 0; index < endExclusive; index++) {
+      if (value.charAt(index) == '"' && !escaped(value, index)) {
+        quoted = !quoted;
+      }
+    }
+    return quoted;
+  }
+
+  private static boolean escaped(String value, int index) {
+    int backslashes = 0;
+    for (int cursor = index - 1; cursor >= 0 && value.charAt(cursor) == '\\'; cursor--) {
+      backslashes++;
+    }
+    return backslashes % 2 == 1;
   }
 
   private static void validateThresholds(

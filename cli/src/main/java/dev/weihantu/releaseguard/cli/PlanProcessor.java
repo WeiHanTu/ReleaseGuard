@@ -18,7 +18,10 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
+import java.util.stream.Collectors;
 
 final class PlanProcessor {
   private static final KubernetesSerialization KUBERNETES = new KubernetesSerialization();
@@ -29,7 +32,9 @@ final class PlanProcessor {
   Evaluation validate(ManifestLoader.LoadedPlan loaded) {
     List<ValidationError> errors = new ArrayList<>();
     Map<String, MetricPolicySpec> acceptedPolicies = new LinkedHashMap<>();
+    Set<String> referencedPolicies = referencedPolicies(loaded.plan());
     loaded.policies().entrySet().stream()
+        .filter(entry -> referencedPolicies.contains(entry.getKey()))
         .sorted(Map.Entry.comparingByKey())
         .forEach(
             entry -> {
@@ -68,6 +73,19 @@ final class PlanProcessor {
             .errors());
     return new Evaluation(
         displayName(namespace, name), acceptedPolicies.size(), ValidationResult.from(errors));
+  }
+
+  private static Set<String> referencedPolicies(ReleasePlan plan) {
+    if (plan.getSpec() == null
+        || plan.getSpec().rollout() == null
+        || plan.getSpec().rollout().gates() == null) {
+      return Set.of();
+    }
+    return plan.getSpec().rollout().gates().stream()
+        .filter(Objects::nonNull)
+        .map(gate -> gate.policyRef())
+        .filter(Objects::nonNull)
+        .collect(Collectors.toUnmodifiableSet());
   }
 
   RenderedPlan render(
