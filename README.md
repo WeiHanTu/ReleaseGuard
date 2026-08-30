@@ -2,7 +2,7 @@
 
 ReleaseGuard is an implementation-in-progress GitOps progressive-delivery control plane for Kubernetes. Its target workflow lets developers describe a rollout declaratively, reconcile that desired state through a Java operator, evaluate canaries against Prometheus metrics, and retain an auditable deployment-event history in Kafka.
 
-> **Status:** Week 1 contracts and the Week 2 operator-control-loop milestone are implemented. Automated metric-driven progression, external integrations, deployment packaging, and operational measurements are not implemented yet. No production-readiness claim is made.
+> **Status:** Week 1 contracts, the Week 2 operator-control-loop milestone, and the first Week 3 packaging slice are implemented. Automated metric-driven progression, Argo CD synchronization, external data services, and operational measurements are not implemented yet. No production-readiness claim is made.
 
 ## Implemented
 
@@ -18,6 +18,10 @@ ReleaseGuard is an implementation-in-progress GitOps progressive-delivery contro
 - Fail-closed indefinite Argo pauses until metric-gate integration exists, plus a lightweight Kubernetes API-server test proving repeated apply does not duplicate resources.
 - A bounded cleanup finalizer that requests Argo abort, verifies controller acknowledgment, stable ready endpoints, and zero canary ingress weight, then either deletes every child or retains a controller-independent stable ReplicaSet, Service, and Ingress.
 - Eight-attempt exponential retry for reconciliation and configurable cleanup timing through `RELEASEGUARD_CLEANUP_DEADLINE` (default `60s`) and `RELEASEGUARD_CLEANUP_REQUEUE_INTERVAL` (default `1s`).
+- A digest-pinned multi-stage operator image with an Eclipse Temurin 21 builder and Distroless Java 21 non-root runtime; automated checks enforce UID/GID 65532, a shell-free runtime, no source/build tree, and a 150 MiB size ceiling.
+- Separate `/healthz` and `/readyz` endpoints: liveness starts with the process, while readiness is withheld until Java Operator SDK startup completes.
+- A Helm 4 chart with all four generated CRDs, explicit cluster-wide least-privilege RBAC, immutable-digest rendering, Recreate upgrades, resource limits, and Kubernetes Restricted-profile container settings.
+- A clean Kind installation test that loads the verified image, installs the chart, observes both probes, denies the operator access to Secrets and Namespace deletion, and reconciles a `ReleasePlan` into an Argo Rollout.
 - A checksum-pinned Kind test that exercises multi-generation status observation and both deletion policies against Argo Rollouts v1.9.1 and Kubernetes v1.35.0: it observes a real 5% pause as logical step 0, proves `Delete` holds its finalizer through an Argo outage, and proves `OrphanStable` remains ready without recreating canary resources after both controllers restart.
 - JUnit and jqwik contract tests, formatting checks, CRD freshness verification, wrapper validation, and dependency review.
 
@@ -46,6 +50,18 @@ Run the live Argo finalizer scenario with Docker and `kubectl` available:
 This test runs the real Argo Rollouts controller but not ingress-nginx, so it verifies control-plane state, ready endpoints, and generated Ingress weights rather than request routing.
 Because metric gates arrive in Week 4, the test explicitly patches the bootstrap phase to `Succeeded` before creating its second `ReleasePlan` generation; it does not claim automated promotion.
 
+Build and inspect the runtime image, verify the chart, and reproduce the clean-cluster install:
+
+```bash
+RELEASEGUARD_OPERATOR_IMAGE=releaseguard-operator:dev ./tests/container/operator-image.sh
+./scripts/install-helm.sh
+./tests/helm/chart.sh
+./scripts/install-kind.sh
+./tests/e2e/kind-helm-install.sh
+```
+
+The local image measured 86,672,328 bytes on Docker Desktop 28.4.0 for `linux/arm64`; this is packaging evidence, not a performance benchmark. The chart currently enforces one replica and a `Recreate` deployment strategy because leader election is not implemented.
+
 Example resources are under [`config/examples`](config/examples), generated CRDs under [`config/crd`](config/crd), and accepted architecture decisions under [`docs/adr`](docs/adr).
 
 ## Intended capabilities
@@ -56,7 +72,7 @@ Example resources are under [`config/examples`](config/examples), generated CRDs
 - Staged traffic progression through Argo Rollouts.
 - Baseline-aware error-rate and latency gates backed by Prometheus.
 - At-least-once Kafka lifecycle events with deterministic IDs and idempotent consumers.
-- Docker images, Helm installation, Kind-based local development, and Terraform-managed GKE deployment.
+- Argo CD synchronization, Kind-based GitOps development, and Terraform-managed GKE deployment.
 - Reproducible failure drills, control-plane benchmarks, dashboards, runbooks, and postmortems.
 
 ## Target architecture

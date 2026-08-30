@@ -12,7 +12,7 @@ Use the committed Gradle wrapper; do not rely on a system Gradle installation.
 ./gradlew clean check
 ```
 
-This is the required local gate. Use `./gradlew :api-model:test` while iterating and `./gradlew :api-model:syncCrds` after API changes; review `config/crd/`. For the live Argo deletion test, run `./scripts/install-kind.sh` and `./tests/e2e/kind-finalizer.sh`. Run future Helm and cloud workflows only through committed scripts or Gradle tasks.
+This is the required local gate. Use `./gradlew :api-model:test` while iterating and `./gradlew :api-model:syncCrds` after API changes; review `config/crd/`. Verify packaging with `./tests/container/operator-image.sh`, `./scripts/install-helm.sh`, and `./tests/helm/chart.sh`. Run clean-cluster chart installation with `./scripts/install-kind.sh && ./tests/e2e/kind-helm-install.sh`; run the deeper Argo deletion scenario with `./tests/e2e/kind-finalizer.sh`.
 
 If Python tooling is introduced, manage it with `uv`, commit `pyproject.toml` and `uv.lock`, and use `uv sync --locked`. Do not add `pip install` instructions or an unmanaged `requirements.txt`.
 

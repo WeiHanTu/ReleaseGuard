@@ -1,0 +1,34 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "releaseguard.fullname" . }}
+  labels:
+    {{- include "releaseguard.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["delivery.weihantu.dev"]
+    resources: ["releaseplans"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  - apiGroups: ["delivery.weihantu.dev"]
+    resources: ["releaseplans/status"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: ["delivery.weihantu.dev"]
+    resources: ["metricpolicies"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "patch", "delete"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["rollouts"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["rollouts/status"]
+    verbs: ["get", "patch", "update"]

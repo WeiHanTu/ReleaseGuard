@@ -40,6 +40,27 @@ jobs:
       - name: Compile, format-check, test, and verify generated CRDs
         run: ./gradlew clean check --no-daemon
 
+  packaging:
+    name: Operator image and Helm install
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: wrapper-validation
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build and verify the hardened operator image
+        env:
+          RELEASEGUARD_OPERATOR_IMAGE: releaseguard-operator:dev
+        run: ./tests/container/operator-image.sh
+      - name: Install checksum-pinned Helm
+        run: ./scripts/install-helm.sh
+      - name: Lint and verify the Helm chart
+        run: ./tests/helm/chart.sh
+      - name: Install checksum-pinned Kind
+        run: ./scripts/install-kind.sh
+      - name: Install the chart and reconcile through the container
+        run: ./tests/e2e/kind-helm-install.sh
+
   kind-e2e:
     name: Kind and Argo finalizer E2E
     runs-on: ubuntu-latest

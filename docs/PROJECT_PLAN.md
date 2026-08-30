@@ -20,9 +20,9 @@ Installing Argo CD, Kafka, and Grafana is not sufficient. ReleaseGuard must own 
 
 ## 2. Status and evidence policy
 
-Current status: **Week 2 roadmap milestone complete; Week 3 packaging and GitOps next**.
+Current status: **Week 2 roadmap milestone complete; Week 3 packaging implemented and GitOps synchronization next**.
 
-The Java 21 multi-module build, four API models, semantic validators, deterministic CRD generation, architecture decisions, contract tests, minimal CI, and Week 2 operator control loop are implemented. Week 3 onward is planned. Numbers marked as targets are acceptance criteria, not benchmark results or resume claims.
+The Java 21 multi-module build, four API models, semantic validators, deterministic CRD generation, architecture decisions, contract tests, Week 2 operator control loop, hardened operator image, and Helm installation path are implemented. Argo CD synchronization and Week 4 onward remain planned. Numbers marked as targets are acceptance criteria, not benchmark results or resume claims.
 
 Evidence rules:
 
@@ -579,10 +579,12 @@ Exit achieved: unchanged, duplicate-event, restart, deletion, and conflict-injec
 
 ### Week 3: packaging and GitOps
 
-- Add production-oriented Dockerfiles and Helm chart.
+- [x] Add a production-oriented operator Dockerfile and Helm chart.
 - Bootstrap Kind, Argo CD, and Argo Rollouts.
 - Add environment path and drift test.
 - Add CLI plan validation and rendering.
+
+Implemented packaging evidence: both Java 21 base images are pinned by multi-architecture digest; the final Distroless image runs as UID/GID 65532 and automated inspection rejects a shell, source/build files, or an image larger than 150 MiB. The chart vendors byte-identical generated CRDs, renders either a local tag or release digest, grants explicit verbs without RBAC wildcards, uses Restricted-profile security settings, and refuses more than one replica until leader election exists. A clean Kubernetes v1.35.0 Kind test installs Argo Rollouts v1.9.1 and the chart with Helm v4.2.4, observes live and ready endpoints, proves the service account cannot read Secrets or delete Namespaces, and reconciles a `ReleasePlan` into a Rollout from the in-cluster container. This is local packaging and control-plane evidence; it is not a published-image, vulnerability-scan, Argo CD, traffic-routing, or production result.
 
 Exit: a Git change reaches the cluster without an imperative deployment command.
 

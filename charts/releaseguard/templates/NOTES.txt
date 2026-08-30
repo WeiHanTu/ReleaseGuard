@@ -1,0 +1,4 @@
+ReleaseGuard operator {{ .Chart.AppVersion }} was installed in {{ .Release.Namespace }}.
+
+The chart intentionally permits exactly one replica. Leader election is not implemented yet.
+For release environments, set image.digest to the published sha256 digest instead of relying on a tag.

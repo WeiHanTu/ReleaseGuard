@@ -1,0 +1,40 @@
+replicaCount: 1
+
+image:
+  repository: releaseguard-operator
+  tag: dev
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+operator:
+  healthPort: 8081
+  cleanup:
+    deadline: 60s
+    requeueInterval: 1s
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+terminationGracePeriodSeconds: 30
+revisionHistoryLimit: 3

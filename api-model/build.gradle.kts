@@ -13,6 +13,7 @@ dependencies {
 
 val generatedCrdDirectory = layout.buildDirectory.dir("generated/crd")
 val committedCrdDirectory = rootProject.layout.projectDirectory.dir("config/crd")
+val chartCrdDirectory = rootProject.layout.projectDirectory.dir("charts/releaseguard/crds")
 val mainSourceSet = sourceSets.main.get()
 
 val generateCrds =
@@ -56,22 +57,37 @@ val generateCrds =
         }
     }
 
-val syncCrds =
-    tasks.register<Sync>("syncCrds") {
-        description = "Replaces committed CRDs with deterministic generated output."
+val syncCommittedCrds =
+    tasks.register<Sync>("syncCommittedCrds") {
         group = "crd"
         dependsOn(generateCrds)
         from(generatedCrdDirectory)
         into(committedCrdDirectory)
     }
 
+val syncChartCrds =
+    tasks.register<Sync>("syncChartCrds") {
+        group = "crd"
+        dependsOn(generateCrds)
+        from(generatedCrdDirectory)
+        into(chartCrdDirectory)
+    }
+
+tasks.register("syncCrds") {
+    description = "Replaces committed and Helm-packaged CRDs with deterministic generated output."
+    group = "crd"
+    dependsOn(syncCommittedCrds, syncChartCrds)
+}
+
 val checkCrdFreshness =
     tasks.register("checkCrdFreshness") {
         description = "Fails when committed CRDs differ from generated output."
         group = "verification"
         dependsOn(generateCrds)
+        mustRunAfter(syncCommittedCrds, syncChartCrds)
         inputs.dir(generatedCrdDirectory)
         inputs.dir(committedCrdDirectory)
+        inputs.dir(chartCrdDirectory)
 
         doLast {
             fun filesByRelativePath(directory: File): Map<String, ByteArray> =
@@ -91,15 +107,23 @@ val checkCrdFreshness =
 
             val generated = filesByRelativePath(generatedCrdDirectory.get().asFile)
             val committed = filesByRelativePath(committedCrdDirectory.asFile)
-            val different =
+            val chart = filesByRelativePath(chartCrdDirectory.asFile)
+            val differentCommitted =
                 (generated.keys + committed.keys).sorted().filter { key ->
                     val generatedBytes = generated[key]
                     val committedBytes = committed[key]
                     generatedBytes == null || committedBytes == null || !generatedBytes.contentEquals(committedBytes)
                 }
-            if (different.isNotEmpty()) {
+            val differentChart =
+                (generated.keys + chart.keys).sorted().filter { key ->
+                    val generatedBytes = generated[key]
+                    val chartBytes = chart[key]
+                    generatedBytes == null || chartBytes == null || !generatedBytes.contentEquals(chartBytes)
+                }
+            if (differentCommitted.isNotEmpty() || differentChart.isNotEmpty()) {
                 throw GradleException(
-                    "Committed CRDs are stale: ${different.joinToString()}. " +
+                    "Committed CRDs are stale: config=[${differentCommitted.joinToString()}], " +
+                        "chart=[${differentChart.joinToString()}]. " +
                         "Run ./gradlew :api-model:syncCrds and commit the result.",
                 )
             }

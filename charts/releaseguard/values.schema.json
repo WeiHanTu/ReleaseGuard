@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["replicaCount", "image", "serviceAccount", "operator", "resources"],
+  "properties": {
+    "replicaCount": {
+      "type": "integer",
+      "enum": [1],
+      "description": "Exactly one replica is required until leader election is implemented."
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "digest", "pullPolicy"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "tag": {"type": "string", "minLength": 1},
+        "digest": {"type": "string", "pattern": "^$|^sha256:[a-f0-9]{64}$"},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {"name": {"type": "string", "minLength": 1}}
+      }
+    },
+    "nameOverride": {"type": "string"},
+    "fullnameOverride": {"type": "string"},
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "name", "annotations"],
+      "properties": {
+        "create": {"type": "boolean"},
+        "name": {"type": "string"},
+        "annotations": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
+    "podAnnotations": {"type": "object", "additionalProperties": {"type": "string"}},
+    "podLabels": {"type": "object", "additionalProperties": {"type": "string"}},
+    "operator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["healthPort", "cleanup"],
+      "properties": {
+        "healthPort": {"type": "integer", "minimum": 1024, "maximum": 65535},
+        "cleanup": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["deadline", "requeueInterval"],
+          "properties": {
+            "deadline": {"type": "string", "pattern": "^[1-9][0-9]*(ms|s|m|h)$"},
+            "requeueInterval": {"type": "string", "pattern": "^[1-9][0-9]*(ms|s|m|h)$"}
+          }
+        }
+      }
+    },
+    "resources": {"type": "object", "additionalProperties": true},
+    "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+    "tolerations": {"type": "array", "items": {"type": "object"}},
+    "affinity": {"type": "object"},
+    "priorityClassName": {"type": "string"},
+    "terminationGracePeriodSeconds": {"type": "integer", "minimum": 1, "maximum": 300},
+    "revisionHistoryLimit": {"type": "integer", "minimum": 0, "maximum": 10}
+  }
+}
