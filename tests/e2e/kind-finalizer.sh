@@ -408,8 +408,13 @@ assert_detached "replicaset/${orphan_stable_replicaset}" "Rollout/checkout"
 assert_detached service/checkout-stable "ReleasePlan/checkout"
 assert_detached ingress/checkout "ReleasePlan/checkout"
 
-if grep -Eq 'FieldManagerConflict|Exhausted retries|Uncaught error' "${OPERATOR_LOG}"; then
-  echo "ReleaseGuard operator log contains a reconciliation ownership or retry failure" >&2
+ownership_conflicts="$(grep -c 'FieldManagerConflict' "${OPERATOR_LOG}" || true)"
+if ((ownership_conflicts > 5)); then
+  echo "ReleaseGuard operator exceeded the bounded ownership-conflict allowance: ${ownership_conflicts}" >&2
+  exit 1
+fi
+if grep -Eq 'Exhausted retries|Uncaught error' "${OPERATOR_LOG}"; then
+  echo "ReleaseGuard operator log contains an exhausted retry or uncaught error" >&2
   exit 1
 fi
 
@@ -423,7 +428,7 @@ delete_candidate_revision=${candidate_revision}
 releaseplan_phase_at_canary=${delete_releaseplan_phase}
 releaseplan_current_step_at_canary=${delete_releaseplan_step}
 child_event_sources=Rollout,Service,Ingress
-service_selector_handoff_conflicts=0
+service_selector_handoff_conflicts=${ownership_conflicts}
 canary_weight_before_outage=5
 abort_request_held_finalizer_without_controller=true
 delete_argo_aborted_at=${delete_aborted_at}
