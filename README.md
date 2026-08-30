@@ -18,7 +18,7 @@ ReleaseGuard is an implementation-in-progress GitOps progressive-delivery contro
 - Fail-closed indefinite Argo pauses until metric-gate integration exists, plus a lightweight Kubernetes API-server test proving repeated apply does not duplicate resources.
 - A bounded cleanup finalizer that requests Argo abort, verifies controller acknowledgment, stable ready endpoints, and zero canary ingress weight, then either deletes every child or retains a controller-independent stable ReplicaSet, Service, and Ingress.
 - Eight-attempt exponential retry for reconciliation and configurable cleanup timing through `RELEASEGUARD_CLEANUP_DEADLINE` (default `60s`) and `RELEASEGUARD_CLEANUP_REQUEUE_INTERVAL` (default `1s`).
-- A digest-pinned multi-stage operator image with an Eclipse Temurin 21 builder and Distroless Java 21 non-root runtime; automated checks enforce UID/GID 65532, a shell-free runtime, no source/build tree, and a 150 MiB size ceiling.
+- A digest-pinned multi-stage operator image with an Eclipse Temurin 21 builder and Distroless Java 21 non-root runtime; automated checks enforce UID/GID 65532, a shell-free runtime, no source/build tree, and no more than 50 MiB above the architecture-specific runtime base.
 - Separate `/healthz` and `/readyz` endpoints: liveness starts with the process, while readiness is withheld until Java Operator SDK startup completes.
 - A Helm 4 chart with all four generated CRDs, explicit cluster-wide least-privilege RBAC, immutable-digest rendering, Recreate upgrades, resource limits, and Kubernetes Restricted-profile container settings.
 - A clean Kind installation test that loads the verified image, installs the chart, observes both probes, denies the operator access to Secrets and Namespace deletion, and reconciles a `ReleasePlan` into an Argo Rollout.
@@ -60,7 +60,7 @@ RELEASEGUARD_OPERATOR_IMAGE=releaseguard-operator:dev ./tests/container/operator
 ./tests/e2e/kind-helm-install.sh
 ```
 
-The local image measured 86,672,328 bytes on Docker Desktop 28.4.0 for `linux/arm64`; this is packaging evidence, not a performance benchmark. The chart currently enforces one replica and a `Recreate` deployment strategy because leader election is not implemented.
+The local image measured 86,672,328 bytes on Docker Desktop 28.4.0 for `linux/arm64`, including 24,130,901 bytes above its runtime base; this is packaging evidence, not a performance benchmark. The chart currently enforces one replica and a `Recreate` deployment strategy because leader election is not implemented.
 
 Example resources are under [`config/examples`](config/examples), generated CRDs under [`config/crd`](config/crd), and accepted architecture decisions under [`docs/adr`](docs/adr).
 

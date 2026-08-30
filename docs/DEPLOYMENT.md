@@ -9,7 +9,7 @@ RELEASEGUARD_OPERATOR_IMAGE=releaseguard-operator:dev \
   ./tests/container/operator-image.sh
 ```
 
-The multi-stage build pins the Temurin 21 builder and Distroless Java 21 runtime by image-index digest. Verification checks the configured non-root identity, Java startup, expected entrypoint and port, absence of a shell/source/build tree, and a 150 MiB ceiling intended to catch accidental builder-stage leakage.
+The multi-stage build pins the Temurin 21 builder and Distroless Java 21 runtime by image-index digest. Verification checks the configured non-root identity, Java startup, expected entrypoint and port, absence of a shell/source/build tree, and at most 50 MiB above the architecture-specific runtime base. The relative limit catches accidental builder-stage leakage without assuming that amd64 and arm64 base layers have equal sizes.
 
 ## Verify and install the chart
 
