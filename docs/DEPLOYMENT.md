@@ -1,6 +1,6 @@
 # Operator packaging and installation
 
-ReleaseGuard currently packages only the Java operator. Argo Rollouts must be installed first; Argo CD integration is the next Week 3 slice.
+ReleaseGuard packages the Java operator and a Git-authored local environment. Argo Rollouts and Argo CD remain external platform dependencies rather than chart subdependencies.
 
 ## Build and verify the image
 
@@ -36,3 +36,13 @@ The chart deliberately accepts exactly one replica and uses `Recreate` upgrades.
 ```
 
 This test creates an ephemeral Kubernetes v1.35.0 cluster, installs checksum-verified Argo Rollouts v1.9.1, loads the locally verified image, installs the chart, checks `/healthz` and `/readyz`, and creates a real Argo Rollout through ReleaseGuard. It deletes the cluster on exit and retains evidence under ignored `build/e2e/` output.
+
+## GitOps proof
+
+```bash
+./tests/e2e/kind-gitops.sh
+```
+
+The GitOps test builds on the clean Helm proof, installs Argo CD v3.5.2 from a checksum-verified upstream manifest, and applies `config/argocd/releaseguard-local.yaml`. It serves a disposable bare repository from a non-root, digest-pinned Git-daemon fixture so the current working tree is tested before publication. The test then pushes a second commit and only observes cluster state until Argo CD applies it; no `kubectl apply`, patch, or Argo refresh occurs after the push. Finally, it injects unauthorized metadata drift and waits for self-healing. Test-only reconciliation and repository-cache intervals are five seconds; they are not recommended production settings.
+
+See `docs/GITOPS.md` for ownership boundaries and `docs/COMPATIBILITY.md` for pinned versions.

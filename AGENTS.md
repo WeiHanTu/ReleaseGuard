@@ -12,7 +12,7 @@ Use the committed Gradle wrapper; do not rely on a system Gradle installation.
 ./gradlew clean check
 ```
 
-This is the required local gate. Use `./gradlew :api-model:test` while iterating and `./gradlew :api-model:syncCrds` after API changes; review `config/crd/`. Verify packaging with `./tests/container/operator-image.sh`, `./scripts/install-helm.sh`, and `./tests/helm/chart.sh`. Run clean-cluster chart installation with `./scripts/install-kind.sh && ./tests/e2e/kind-helm-install.sh`; run the deeper Argo deletion scenario with `./tests/e2e/kind-finalizer.sh`.
+This is the required local gate. Use `./gradlew :api-model:test` while iterating and `./gradlew :api-model:syncCrds` after API changes; review `config/crd/`. Verify packaging with `./tests/container/operator-image.sh`, `./scripts/install-helm.sh`, and `./tests/helm/chart.sh`. Run clean-cluster GitOps synchronization with `./scripts/install-kind.sh && ./tests/e2e/kind-gitops.sh`; use `kind-helm-install.sh` for the chart-only path and `kind-finalizer.sh` for deletion behavior.
 
 If Python tooling is introduced, manage it with `uv`, commit `pyproject.toml` and `uv.lock`, and use `uv sync --locked`. Do not add `pip install` instructions or an unmanaged `requirements.txt`.
 

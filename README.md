@@ -2,7 +2,7 @@
 
 ReleaseGuard is an implementation-in-progress GitOps progressive-delivery control plane for Kubernetes. Its target workflow lets developers describe a rollout declaratively, reconcile that desired state through a Java operator, evaluate canaries against Prometheus metrics, and retain an auditable deployment-event history in Kafka.
 
-> **Status:** Week 1 contracts, the Week 2 operator-control-loop milestone, and the first Week 3 packaging slice are implemented. Automated metric-driven progression, Argo CD synchronization, external data services, and operational measurements are not implemented yet. No production-readiness claim is made.
+> **Status:** Week 1 contracts, the Week 2 operator-control-loop milestone, and the Week 3 packaging and GitOps slices are implemented. CLI rendering, automated metric-driven progression, external data services, and production operations are not implemented yet. No production-readiness claim is made.
 
 ## Implemented
 
@@ -22,6 +22,8 @@ ReleaseGuard is an implementation-in-progress GitOps progressive-delivery contro
 - Separate `/healthz` and `/readyz` endpoints: liveness starts with the process, while readiness is withheld until Java Operator SDK startup completes.
 - A Helm 4 chart with all four generated CRDs, explicit cluster-wide least-privilege RBAC, immutable-digest rendering, Recreate upgrades, resource limits, and Kubernetes Restricted-profile container settings.
 - A clean Kind installation test that loads the verified image, installs the chart, observes both probes, denies the operator access to Secrets and Namespace deletion, and reconciles a `ReleasePlan` into an Argo Rollout.
+- A checksum-pinned Argo CD v3.5.2 installer, automated-sync Application, and committed `environments/local` desired-state path with pruning, retry, and self-healing enabled.
+- A self-contained Kind GitOps test that serves a disposable non-root Git remote, observes a second commit synchronize without an imperative deployment command, and verifies Argo CD restores unauthorized live drift. One local arm64 run observed 4-second Git synchronization and 3-second drift recovery; these are test observations, not production SLOs.
 - A checksum-pinned Kind test that exercises multi-generation status observation and both deletion policies against Argo Rollouts v1.9.1 and Kubernetes v1.35.0: it observes a real 5% pause as logical step 0, proves `Delete` holds its finalizer through an Argo outage, and proves `OrphanStable` remains ready without recreating canary resources after both controllers restart.
 - JUnit and jqwik contract tests, formatting checks, CRD freshness verification, wrapper validation, and dependency review.
 
@@ -58,21 +60,21 @@ RELEASEGUARD_OPERATOR_IMAGE=releaseguard-operator:dev ./tests/container/operator
 ./tests/helm/chart.sh
 ./scripts/install-kind.sh
 ./tests/e2e/kind-helm-install.sh
+./tests/e2e/kind-gitops.sh
 ```
 
 The local image measured 86,672,799 bytes on Docker Desktop 28.4.0 for `linux/arm64`, including 24,131,372 bytes above its runtime base; this is packaging evidence, not a performance benchmark. The chart currently enforces one replica and a `Recreate` deployment strategy because leader election is not implemented.
 
-Example resources are under [`config/examples`](config/examples), generated CRDs under [`config/crd`](config/crd), and accepted architecture decisions under [`docs/adr`](docs/adr).
+Example resources are under [`config/examples`](config/examples), the Git-authored local environment under [`environments/local`](environments/local), and accepted architecture decisions under [`docs/adr`](docs/adr). See [`docs/GITOPS.md`](docs/GITOPS.md) for the ownership model and test procedure.
 
 ## Intended capabilities
 
 - Versioned `ReleasePlan`, `MetricPolicy`, and `ReleaseAction` Kubernetes APIs, plus an internal `ReleaseEvent` outbox.
 - A Java 21 operator that performs idempotent reconciliation and safely resumes after restart.
-- Git as the desired-state source of truth through Argo CD.
 - Staged traffic progression through Argo Rollouts.
 - Baseline-aware error-rate and latency gates backed by Prometheus.
 - At-least-once Kafka lifecycle events with deterministic IDs and idempotent consumers.
-- Argo CD synchronization, Kind-based GitOps development, and Terraform-managed GKE deployment.
+- Terraform-managed GKE deployment.
 - Reproducible failure drills, control-plane benchmarks, dashboards, runbooks, and postmortems.
 
 ## Target architecture

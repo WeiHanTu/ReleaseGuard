@@ -41,9 +41,9 @@ jobs:
         run: ./gradlew clean check --no-daemon
 
   packaging:
-    name: Operator image and Helm install
+    name: Operator image, Helm, and GitOps
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     needs: wrapper-validation
     steps:
       - name: Check out repository
@@ -58,8 +58,8 @@ jobs:
         run: ./tests/helm/chart.sh
       - name: Install checksum-pinned Kind
         run: ./scripts/install-kind.sh
-      - name: Install the chart and reconcile through the container
-        run: ./tests/e2e/kind-helm-install.sh
+      - name: Install through Helm and verify Argo CD sync and self-healing
+        run: ./tests/e2e/kind-gitops.sh
 
   kind-e2e:
     name: Kind and Argo finalizer E2E

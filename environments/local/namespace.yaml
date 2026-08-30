@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: releaseguard-gitops
+  labels:
+    app.kubernetes.io/part-of: releaseguard
+    delivery.weihantu.dev/environment: local
