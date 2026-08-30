@@ -12,6 +12,8 @@ interface ReconciliationRuntime {
 
   void apply(List<HasMetadata> resources, Context<ReleasePlan> context);
 
+  RolloutObservation observeRollout(ReleasePlan plan, Context<ReleasePlan> context);
+
   CleanupObservation observeCleanup(ReleasePlan plan, Context<ReleasePlan> context);
 
   void requestAbort(ReleasePlan plan, Context<ReleasePlan> context);

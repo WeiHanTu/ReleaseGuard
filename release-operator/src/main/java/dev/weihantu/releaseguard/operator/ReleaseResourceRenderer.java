@@ -83,6 +83,7 @@ public final class ReleaseResourceRenderer {
       podLabels.putAll(sourceTemplate.getMetadata().getLabels());
     }
     podLabels.putAll(selectorLabels);
+    podLabels.put(PLAN_GENERATION_LABEL, Long.toString(identity.generation()));
     podLabels.put(REVISION_LABEL, revision(identity, spec));
 
     Map<String, Object> template = new LinkedHashMap<>();
@@ -128,7 +129,7 @@ public final class ReleaseResourceRenderer {
     return new ObjectMetaBuilder()
         .withName(name)
         .withNamespace(identity.namespace())
-        .withLabels(selectorLabels(identity))
+        .withLabels(resourceLabels(identity))
         .withOwnerReferences(ownerReference(identity))
         .build();
   }
@@ -151,9 +152,13 @@ public final class ReleaseResourceRenderer {
         PLAN_NAME_LABEL,
         identity.name(),
         PLAN_UID_LABEL,
-        identity.uid(),
-        PLAN_GENERATION_LABEL,
-        Long.toString(identity.generation()));
+        identity.uid());
+  }
+
+  private static Map<String, String> resourceLabels(Identity identity) {
+    Map<String, String> labels = new LinkedHashMap<>(selectorLabels(identity));
+    labels.put(PLAN_GENERATION_LABEL, Long.toString(identity.generation()));
+    return Map.copyOf(labels);
   }
 
   static String revision(Identity identity, ReleasePlanSpec spec) {

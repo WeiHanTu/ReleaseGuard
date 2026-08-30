@@ -42,6 +42,13 @@ class ReleasePlanReconcilerTest {
     assertFalse(applyControl.getScheduleDelay().isPresent());
     assertEquals(Phase.Bootstrapping, plan.getStatus().phase());
     assertEquals(4, runtime.applied.size());
+
+    runtime.rolloutObservation =
+        new RolloutObservation(true, true, "Healthy", null, "stable-hash", "stable-hash", 2, 2);
+    reconciler.reconcile(plan, null);
+
+    assertEquals("checkout-stable-hash", plan.getStatus().stableRevision());
+    assertEquals("BootstrapReadyAwaitingGate", conditionReason(plan, "Ready"));
   }
 
   @Test
@@ -183,6 +190,7 @@ class ReleasePlanReconcilerTest {
     private final List<HasMetadata> applied = new ArrayList<>();
     private CleanupObservation observation =
         observation(false, false, false, false, true, false, false);
+    private RolloutObservation rolloutObservation = RolloutObservation.missing();
     private int abortRequests;
     private int deleteRequests;
     private int orphanRequests;
@@ -198,6 +206,11 @@ class ReleasePlanReconcilerTest {
     public void apply(List<HasMetadata> resources, Context<ReleasePlan> context) {
       applied.clear();
       applied.addAll(resources);
+    }
+
+    @Override
+    public RolloutObservation observeRollout(ReleasePlan plan, Context<ReleasePlan> context) {
+      return rolloutObservation;
     }
 
     @Override

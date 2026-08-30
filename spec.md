@@ -289,6 +289,8 @@ Allowed phases:
 - `RG-STAT-002`: Conditions MUST use Kubernetes condition conventions and include `Ready`, `Progressing`, `GateHealthy`, `AuditHealthy`, and `Degraded` where applicable.
 - `RG-STAT-003`: Human-readable messages MUST NOT be parsed to drive control behavior; machine-readable reason codes are required.
 - `RG-STAT-004`: A new admitted generation MAY transition a previously terminal plan back to `Validating`.
+- `RG-STAT-005`: Argo phase, step, and revision evidence MUST be projected only from a Rollout status whose `observedGeneration` covers the current Rollout generation.
+- `RG-STAT-006`: Child status alone MUST NOT claim a ReleaseGuard-approved promotion or rollback; those phase transitions require the corresponding gate or action decision.
 
 ## 8. MetricPolicy API
 
@@ -424,7 +426,7 @@ AnalysisTemplate: checkout-gates-g<generation>
 - `RG-RES-004`: User edits to operator-owned fields MUST be reverted on reconciliation and recorded as drift metrics.
 - `RG-RES-005`: Rollout revision labels MUST distinguish stable and canary metrics without relying on pod names.
 - `RG-RES-006`: The generated Ingress MUST use Argo Rollouts-compatible ingress-nginx traffic annotations.
-- `RG-RES-007`: Generated Services MUST use immutable ReleaseGuard selectors and MUST NOT route traffic to unowned pods.
+- `RG-RES-007`: Generated Services MUST use generation-stable ReleaseGuard identity selectors. ReleaseGuard initializes those selectors, Argo Rollouts owns the pod-template-hash routing selector after adoption, and ReleaseGuard MUST verify the resulting selector before safety decisions.
 - `RG-RES-008`: Generated AnalysisTemplates MUST snapshot policy queries, thresholds, timing, and policy resource version for the release generation.
 
 ## 12. Reconciliation specification

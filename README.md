@@ -2,7 +2,7 @@
 
 ReleaseGuard is an implementation-in-progress GitOps progressive-delivery control plane for Kubernetes. Its target workflow lets developers describe a rollout declaratively, reconcile that desired state through a Java operator, evaluate canaries against Prometheus metrics, and retain an auditable deployment-event history in Kafka.
 
-> **Status:** Week 1 contracts and the initial Week 2 reconciliation/finalization slices are implemented. General rollout progression, metric-driven decisions, child-event sources, external integrations, deployment packaging, and operational measurements are not implemented yet. No production-readiness claim is made.
+> **Status:** Week 1 contracts and the initial Week 2 reconciliation, observation, and finalization slices are implemented. Automated metric-driven progression, external integrations, deployment packaging, and operational measurements are not implemented yet. No production-readiness claim is made.
 
 ## Implemented
 
@@ -11,11 +11,13 @@ ReleaseGuard is an implementation-in-progress GitOps progressive-delivery contro
 - Deterministic semantic validation for image digests, rollout steps, bootstrap gates, approved metric thresholds, pod security, active-release updates, actions, and outbox identity.
 - Reproducible structural CRDs with status subresources and printer columns.
 - A Java Operator SDK reconciler that records generation-scoped validation before applying child resources and refuses to publish progress status when an apply fails.
-- Deterministic server-side-apply rendering for stable/canary Services, ingress-nginx Ingress, and Argo Rollout resources with owner references and operator-owned selectors.
+- Deterministic server-side-apply rendering for stable/canary Services, ingress-nginx Ingress, and Argo Rollout resources with owner references and generation-stable workload selectors.
+- Java Operator SDK informer sources for managed Rollout, Service, and Ingress changes, with generation-current projection of Argo phase, logical step, stable hash, and canary hash into `ReleasePlan` status.
+- An explicit field-ownership handoff: ReleaseGuard initializes Service identity selectors, then omits the selector after Argo installs its pod-template hash while continuing to verify traffic state.
 - Fail-closed indefinite Argo pauses until metric-gate integration exists, plus a lightweight Kubernetes API-server test proving repeated apply does not duplicate resources.
 - A bounded cleanup finalizer that requests Argo abort, verifies controller acknowledgment, stable ready endpoints, and zero canary ingress weight, then either deletes every child or retains a controller-independent stable ReplicaSet, Service, and Ingress.
 - Eight-attempt exponential retry for reconciliation and configurable cleanup timing through `RELEASEGUARD_CLEANUP_DEADLINE` (default `60s`) and `RELEASEGUARD_CLEANUP_REQUEUE_INTERVAL` (default `1s`).
-- A checksum-pinned Kind test that exercises both deletion policies against Argo Rollouts v1.9.1 and Kubernetes v1.35.0: `Delete` holds its finalizer through an Argo outage and captures `5% -> 0%` restoration; `OrphanStable` retains two ready stable replicas and proves canary resources stay absent after both controllers restart.
+- A checksum-pinned Kind test that exercises multi-generation status observation and both deletion policies against Argo Rollouts v1.9.1 and Kubernetes v1.35.0: it observes a real 5% pause as logical step 0, proves `Delete` holds its finalizer through an Argo outage, and proves `OrphanStable` remains ready without recreating canary resources after both controllers restart.
 - JUnit and jqwik contract tests, formatting checks, CRD freshness verification, wrapper validation, and dependency review.
 
 ## Build and verify
@@ -41,6 +43,7 @@ Run the live Argo finalizer scenario with Docker and `kubectl` available:
 ```
 
 This test runs the real Argo Rollouts controller but not ingress-nginx, so it verifies control-plane state, ready endpoints, and generated Ingress weights rather than request routing.
+Because metric gates arrive in Week 4, the test explicitly patches the bootstrap phase to `Succeeded` before creating its second `ReleasePlan` generation; it does not claim automated promotion.
 
 Example resources are under [`config/examples`](config/examples), generated CRDs under [`config/crd`](config/crd), and accepted architecture decisions under [`docs/adr`](docs/adr).
 

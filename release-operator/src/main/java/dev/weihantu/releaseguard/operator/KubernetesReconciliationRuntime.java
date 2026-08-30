@@ -60,12 +60,39 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
   @Override
   public void apply(List<HasMetadata> resources, Context<ReleasePlan> context) {
     for (HasMetadata resource : resources) {
+      omitArgoOwnedServiceSelector(resource, context);
       context
           .getClient()
           .resource(resource)
           .fieldManager(ReleaseResourceRenderer.FIELD_MANAGER)
           .serverSideApply();
     }
+  }
+
+  @Override
+  public RolloutObservation observeRollout(ReleasePlan plan, Context<ReleasePlan> context) {
+    GenericKubernetesResource rollout =
+        rollout(context, plan.getMetadata().getNamespace(), plan.getMetadata().getName()).get();
+    if (rollout == null) {
+      return RolloutObservation.missing();
+    }
+
+    Map<?, ?> status = asMap(rollout.getAdditionalProperties().get("status"));
+    Long generation = rollout.getMetadata().getGeneration();
+    Long observedGeneration = longValue(status.get("observedGeneration"));
+    boolean statusCurrent =
+        generation != null
+            && observedGeneration != null
+            && observedGeneration.longValue() >= generation.longValue();
+    return new RolloutObservation(
+        true,
+        statusCurrent,
+        stringValue(status.get("phase")),
+        integerValue(status.get("currentStepIndex")),
+        stringValue(status.get("stableRS")),
+        stringValue(status.get("currentPodHash")),
+        integerValue(status.get("replicas")),
+        integerValue(status.get("readyReplicas")));
   }
 
   @Override
@@ -333,6 +360,64 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
 
   private static String stringValue(Object value) {
     return value instanceof String string ? string : null;
+  }
+
+  private static Long longValue(Object value) {
+    if (value instanceof Number number) {
+      return number.longValue();
+    }
+    if (value instanceof String string) {
+      try {
+        return Long.valueOf(string);
+      } catch (NumberFormatException ignored) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  private static Integer integerValue(Object value) {
+    if (value instanceof Number number) {
+      return number.intValue();
+    }
+    if (value instanceof String string) {
+      try {
+        return Integer.valueOf(string);
+      } catch (NumberFormatException ignored) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  private static void omitArgoOwnedServiceSelector(
+      HasMetadata desired, Context<ReleasePlan> context) {
+    if (!(desired instanceof GenericKubernetesResource generic)
+        || !"Service".equals(desired.getKind())) {
+      return;
+    }
+    Service existing =
+        context
+            .getClient()
+            .services()
+            .inNamespace(desired.getMetadata().getNamespace())
+            .withName(desired.getMetadata().getName())
+            .get();
+    if (existing == null
+        || existing.getSpec() == null
+        || existing.getSpec().getSelector() == null
+        || !existing.getSpec().getSelector().containsKey("rollouts-pod-template-hash")) {
+      return;
+    }
+    Map<String, Object> spec =
+        new LinkedHashMap<>(asStringObjectMap(generic.getAdditionalProperties().get("spec")));
+    spec.remove("selector");
+    generic.setAdditionalProperty("spec", spec);
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Map<String, Object> asStringObjectMap(Object value) {
+    return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
   }
 
   private static boolean detached(ObjectMeta metadata, String ownerUid) {

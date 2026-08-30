@@ -77,6 +77,89 @@ class KubernetesReconciliationRuntimeIT {
   }
 
   @Test
+  void observesOnlyGenerationCurrentArgoRolloutStatus() {
+    String namespace = "rollout-observe";
+    ReleasePlan plan = prepareRelease(namespace, 15);
+    KubernetesReconciliationRuntime runtime = new KubernetesReconciliationRuntime();
+    Context<ReleasePlan> context = context(client);
+    var rollout =
+        client
+            .genericKubernetesResources(rolloutDefinition())
+            .inNamespace(namespace)
+            .withName("checkout")
+            .get();
+    long rolloutGeneration = rollout.getMetadata().getGeneration();
+
+    client
+        .genericKubernetesResources(rolloutDefinition())
+        .inNamespace(namespace)
+        .withName("checkout")
+        .subresource("status")
+        .patch(
+            PatchContext.of(PatchType.JSON_MERGE),
+            "{\"status\":{\"observedGeneration\":\""
+                + rolloutGeneration
+                + "\",\"phase\":\"Paused\",\"currentStepIndex\":\"1\","
+                + "\"stableRS\":\"stable-hash\",\"currentPodHash\":\"canary-hash\","
+                + "\"replicas\":2,\"readyReplicas\":1}}");
+
+    RolloutObservation observation = runtime.observeRollout(plan, context);
+
+    assertTrue(observation.present());
+    assertTrue(observation.statusCurrent());
+    assertEquals("Paused", observation.argoPhase());
+    assertEquals(1, observation.currentStepIndex());
+    assertEquals("stable-hash", observation.stablePodHash());
+    assertEquals("canary-hash", observation.currentPodHash());
+    assertEquals(2, observation.desiredReplicas());
+    assertEquals(1, observation.readyReplicas());
+  }
+
+  @Test
+  void preservesArgoOwnedServiceSelectorsAcrossReleaseGenerations() {
+    String namespace = "service-handoff";
+    prepareNamespace(namespace);
+    KubernetesReconciliationRuntime runtime = new KubernetesReconciliationRuntime();
+    Context<ReleasePlan> context = context(client);
+    ReleasePlan first =
+        OperatorTestFixtures.plan(
+            16,
+            namespace,
+            dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanSpec.DeletionPolicy.Delete);
+    runtime.apply(new ReleaseResourceRenderer().render(first), context);
+
+    for (String serviceName : List.of("checkout-stable", "checkout-canary")) {
+      client
+          .services()
+          .inNamespace(namespace)
+          .withName(serviceName)
+          .edit(
+              service -> {
+                Map<String, String> selector = new LinkedHashMap<>(service.getSpec().getSelector());
+                selector.put("rollouts-pod-template-hash", "argo-owned-hash");
+                service.getSpec().setSelector(Map.copyOf(selector));
+                return service;
+              });
+    }
+
+    ReleasePlan second =
+        OperatorTestFixtures.plan(
+            17,
+            namespace,
+            dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanSpec.DeletionPolicy.Delete);
+    runtime.apply(new ReleaseResourceRenderer().render(second), context);
+
+    for (String serviceName : List.of("checkout-stable", "checkout-canary")) {
+      var service = client.services().inNamespace(namespace).withName(serviceName).get();
+      assertEquals(
+          "argo-owned-hash", service.getSpec().getSelector().get("rollouts-pod-template-hash"));
+      assertEquals(
+          "17",
+          service.getMetadata().getLabels().get(ReleaseResourceRenderer.PLAN_GENERATION_LABEL));
+    }
+  }
+
+  @Test
   void observesAbortStableEndpointsAndNginxCanaryWeight() {
     String namespace = "cleanup-observe";
     ReleasePlan plan = prepareRelease(namespace, 12);

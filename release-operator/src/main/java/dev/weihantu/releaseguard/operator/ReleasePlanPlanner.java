@@ -47,6 +47,13 @@ public final class ReleasePlanPlanner {
   }
 
   public ReconciliationPlan plan(ReleasePlan plan, Map<String, MetricPolicySpec> acceptedPolicies) {
+    return plan(plan, acceptedPolicies, RolloutObservation.missing());
+  }
+
+  ReconciliationPlan plan(
+      ReleasePlan plan,
+      Map<String, MetricPolicySpec> acceptedPolicies,
+      RolloutObservation rolloutObservation) {
     ReleaseResourceRenderer.Identity identity = ReleaseResourceRenderer.Identity.from(plan);
     ReleasePlanStatus current = plan.getStatus();
     long generation = identity.generation();
@@ -102,20 +109,113 @@ public final class ReleasePlanPlanner {
     }
 
     if (currentPhase == Phase.Bootstrapping || currentPhase == Phase.Progressing) {
-      ReleasePlanStatus status =
-          status(
-              current,
-              identity,
-              currentPhase,
-              current.currentStep(),
-              current.stableRevision(),
-              current.canaryRevision(),
-              currentPhase == Phase.Bootstrapping ? "BootstrapPrepared" : "RolloutPrepared",
-              "Desired rollout resources are prepared and metric-gated progression is pending");
-      return new ReconciliationPlan(status, renderer.render(plan), null);
+      return activeRelease(plan, current, identity, currentPhase, rolloutObservation);
+    }
+
+    if (currentPhase == Phase.Paused) {
+      return activeRelease(plan, current, identity, currentPhase, rolloutObservation);
     }
 
     return new ReconciliationPlan(current, List.of(), null);
+  }
+
+  private ReconciliationPlan activeRelease(
+      ReleasePlan plan,
+      ReleasePlanStatus current,
+      ReleaseResourceRenderer.Identity identity,
+      Phase currentPhase,
+      RolloutObservation observation) {
+    Phase phase = projectedPhase(currentPhase, observation);
+    phaseMachine.requireTransition(currentPhase, phase);
+    String stableRevision = current.stableRevision();
+    String canaryRevision = current.canaryRevision();
+    Integer currentStep = current.currentStep();
+    String reason;
+    String message;
+
+    if (!observation.present()) {
+      reason = "RolloutPending";
+      message = "Waiting for the generated Argo Rollout";
+    } else if (!observation.statusCurrent()) {
+      reason = "RolloutStatusStale";
+      message = "Waiting for Argo Rollouts to observe the current Rollout generation";
+    } else {
+      stableRevision = qualifiedRevision(identity.name(), observation.stablePodHash());
+      canaryRevision = candidateRevision(identity.name(), observation);
+      currentStep =
+          logicalStep(observation.currentStepIndex(), plan.getSpec().rollout().steps().size());
+      reason = observationReason(currentPhase, observation);
+      message = observationMessage(currentPhase, observation);
+    }
+
+    ReleasePlanStatus status =
+        status(
+            current, identity, phase, currentStep, stableRevision, canaryRevision, reason, message);
+    return new ReconciliationPlan(status, renderer.render(plan), null);
+  }
+
+  private static Phase projectedPhase(Phase currentPhase, RolloutObservation observation) {
+    if (!observation.present() || !observation.statusCurrent()) {
+      return currentPhase;
+    }
+    if ("Degraded".equals(observation.argoPhase())) {
+      return currentPhase == Phase.Bootstrapping ? Phase.Failed : currentPhase;
+    }
+    if (currentPhase == Phase.Bootstrapping) {
+      return currentPhase;
+    }
+    boolean paused =
+        "Paused".equals(observation.argoPhase()) || "Suspended".equals(observation.argoPhase());
+    if (paused) {
+      return Phase.Paused;
+    }
+    return currentPhase;
+  }
+
+  private static String observationReason(Phase currentPhase, RolloutObservation observation) {
+    if (currentPhase == Phase.Bootstrapping && "Healthy".equals(observation.argoPhase())) {
+      return "BootstrapReadyAwaitingGate";
+    }
+    if ("Degraded".equals(observation.argoPhase())) {
+      return "ArgoRolloutDegraded";
+    }
+    if ("Paused".equals(observation.argoPhase()) || "Suspended".equals(observation.argoPhase())) {
+      return "ArgoRolloutPaused";
+    }
+    return "ArgoRolloutObserved";
+  }
+
+  private static String observationMessage(Phase currentPhase, RolloutObservation observation) {
+    if (currentPhase == Phase.Bootstrapping && "Healthy".equals(observation.argoPhase())) {
+      return "Bootstrap workload is ready; administrator-approved metric evidence is still required";
+    }
+    return "Observed Argo Rollout phase " + observation.argoPhase();
+  }
+
+  private static String candidateRevision(String name, RolloutObservation observation) {
+    if (observation.currentPodHash() == null
+        || observation.currentPodHash().isBlank()
+        || observation.currentPodHash().equals(observation.stablePodHash())) {
+      return null;
+    }
+    return qualifiedRevision(name, observation.currentPodHash());
+  }
+
+  private static String qualifiedRevision(String name, String podHash) {
+    if (podHash == null || podHash.isBlank()) {
+      return null;
+    }
+    return podHash.startsWith(name + "-") ? podHash : name + "-" + podHash;
+  }
+
+  private static Integer logicalStep(Integer argoStepIndex, int releaseStepCount) {
+    if (releaseStepCount == 0) {
+      return null;
+    }
+    if (argoStepIndex == null) {
+      return releaseStepCount - 1;
+    }
+    return Math.min(argoStepIndex / 2, releaseStepCount - 1);
   }
 
   private ReconciliationPlan failed(
@@ -158,7 +258,10 @@ public final class ReleasePlanPlanner {
         currentStep,
         stableRevision,
         canaryRevision,
-        phase == Phase.Bootstrapping || phase == Phase.Progressing
+        phase == Phase.Bootstrapping
+                || phase == Phase.Progressing
+                || phase == Phase.Paused
+                || phase == Phase.RollingBack
             ? new ReleasePlanStatus.ResourceReference(identity.name())
             : null,
         sameGeneration(current, identity.generation()) ? current.lastGateDecision() : null,
@@ -199,7 +302,11 @@ public final class ReleasePlanPlanner {
         condition(
             current,
             "Degraded",
-            phase == Phase.Failed ? "True" : "False",
+            phase == Phase.Failed
+                    || phase == Phase.RollingBack
+                    || "ArgoRolloutDegraded".equals(reason)
+                ? "True"
+                : "False",
             generation,
             reason,
             message));

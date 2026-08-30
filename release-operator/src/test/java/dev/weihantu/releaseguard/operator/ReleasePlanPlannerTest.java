@@ -57,10 +57,12 @@ class ReleasePlanPlannerTest {
     ReconciliationPlan first = planner.plan(plan, OperatorTestFixtures.policies());
 
     plan.setStatus(first.status());
+    ReconciliationPlan observedMissing = planner.plan(plan, OperatorTestFixtures.policies());
+    plan.setStatus(observedMissing.status());
     ReconciliationPlan duplicate = planner.plan(plan, OperatorTestFixtures.policies());
 
-    assertEquals(first.status(), duplicate.status());
-    assertEquals(first.desiredResources(), duplicate.desiredResources());
+    assertEquals(observedMissing.status(), duplicate.status());
+    assertEquals(observedMissing.desiredResources(), duplicate.desiredResources());
   }
 
   @Test
@@ -120,6 +122,94 @@ class ReleasePlanPlannerTest {
             .anyMatch(condition -> condition.getReason().equals("RG-PLAN-011")));
   }
 
+  @Test
+  void projectsCurrentArgoPauseAndRevisionHashesIntoReleaseStatus() {
+    var plan = OperatorTestFixtures.plan(7);
+    plan.setStatus(activeStatus(7, Phase.Progressing, "checkout-old"));
+    RolloutObservation observation =
+        new RolloutObservation(true, true, "Paused", 1, "stable-hash", "canary-hash", 2, 2);
+
+    ReconciliationPlan result = planner.plan(plan, OperatorTestFixtures.policies(), observation);
+
+    assertEquals(Phase.Paused, result.status().phase());
+    assertEquals(0, result.status().currentStep());
+    assertEquals("checkout-stable-hash", result.status().stableRevision());
+    assertEquals("checkout-canary-hash", result.status().canaryRevision());
+    assertEquals("ArgoRolloutPaused", conditionReason(result.status(), "Ready"));
+    assertEquals(new ReleasePlanStatus.ResourceReference("checkout"), result.status().rolloutRef());
+  }
+
+  @Test
+  void bootstrapRecordsReadyStableRevisionWithoutClaimingGateSuccess() {
+    var plan = OperatorTestFixtures.plan(8);
+    plan.setStatus(activeStatus(8, Phase.Bootstrapping, null));
+    RolloutObservation observation =
+        new RolloutObservation(true, true, "Healthy", null, "stable-hash", "stable-hash", 2, 2);
+
+    ReconciliationPlan result = planner.plan(plan, OperatorTestFixtures.policies(), observation);
+
+    assertEquals(Phase.Bootstrapping, result.status().phase());
+    assertEquals(2, result.status().currentStep());
+    assertEquals("checkout-stable-hash", result.status().stableRevision());
+    assertNull(result.status().canaryRevision());
+    assertEquals("BootstrapReadyAwaitingGate", conditionReason(result.status(), "Ready"));
+  }
+
+  @Test
+  void staleRolloutStatusCannotOverwriteCurrentReleaseEvidence() {
+    var plan = OperatorTestFixtures.plan(9);
+    plan.setStatus(activeStatus(9, Phase.Progressing, "checkout-current-stable"));
+    RolloutObservation stale =
+        new RolloutObservation(true, false, "Paused", 1, "stale-stable", "stale-canary", 2, 1);
+
+    ReconciliationPlan result = planner.plan(plan, OperatorTestFixtures.policies(), stale);
+
+    assertEquals(Phase.Progressing, result.status().phase());
+    assertEquals("checkout-current-stable", result.status().stableRevision());
+    assertEquals("checkout-current-canary", result.status().canaryRevision());
+    assertEquals("RolloutStatusStale", conditionReason(result.status(), "Ready"));
+  }
+
+  @Test
+  void degradedCandidateIsReportedWithoutClaimingRollbackWasStarted() {
+    var plan = OperatorTestFixtures.plan(10);
+    plan.setStatus(activeStatus(10, Phase.Progressing, "checkout-stable"));
+    RolloutObservation degraded =
+        new RolloutObservation(true, true, "Degraded", 1, "stable", "candidate", 10, 8);
+
+    ReconciliationPlan result = planner.plan(plan, OperatorTestFixtures.policies(), degraded);
+
+    assertEquals(Phase.Progressing, result.status().phase());
+    assertEquals("ArgoRolloutDegraded", conditionReason(result.status(), "Ready"));
+    assertEquals("True", conditionStatus(result.status(), "Degraded"));
+  }
+
+  @Test
+  void childResumeCannotClaimAnApprovedReleaseGuardPromotion() {
+    var plan = OperatorTestFixtures.plan(12);
+    plan.setStatus(activeStatus(12, Phase.Paused, "checkout-stable"));
+    RolloutObservation progressing =
+        new RolloutObservation(true, true, "Progressing", 2, "stable", "candidate", 10, 9);
+
+    ReconciliationPlan result = planner.plan(plan, OperatorTestFixtures.policies(), progressing);
+
+    assertEquals(Phase.Paused, result.status().phase());
+    assertEquals("ArgoRolloutObserved", conditionReason(result.status(), "Ready"));
+  }
+
+  @Test
+  void degradedBootstrapFailsWithoutClaimingRollback() {
+    var plan = OperatorTestFixtures.plan(11);
+    plan.setStatus(activeStatus(11, Phase.Bootstrapping, null));
+    RolloutObservation degraded =
+        new RolloutObservation(true, true, "Degraded", 0, null, "candidate", 10, 0);
+
+    ReconciliationPlan result = planner.plan(plan, OperatorTestFixtures.policies(), degraded);
+
+    assertEquals(Phase.Failed, result.status().phase());
+    assertEquals("ArgoRolloutDegraded", conditionReason(result.status(), "Ready"));
+  }
+
   private static ReleasePlanStatus validatingStatus(long generation, String stableRevision) {
     return new ReleasePlanStatus(
         generation,
@@ -133,5 +223,37 @@ class ReleasePlanPlannerTest {
         null,
         null,
         List.of());
+  }
+
+  private static ReleasePlanStatus activeStatus(
+      long generation, Phase phase, String stableRevision) {
+    return new ReleasePlanStatus(
+        generation,
+        OperatorTestFixtures.UID + ":" + generation,
+        phase,
+        0,
+        stableRevision,
+        "checkout-current-canary",
+        new ReleasePlanStatus.ResourceReference("checkout"),
+        null,
+        null,
+        null,
+        List.of());
+  }
+
+  private static String conditionReason(ReleasePlanStatus status, String type) {
+    return status.conditions().stream()
+        .filter(condition -> type.equals(condition.getType()))
+        .findFirst()
+        .orElseThrow()
+        .getReason();
+  }
+
+  private static String conditionStatus(ReleasePlanStatus status, String type) {
+    return status.conditions().stream()
+        .filter(condition -> type.equals(condition.getType()))
+        .findFirst()
+        .orElseThrow()
+        .getStatus();
   }
 }

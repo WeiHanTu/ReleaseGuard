@@ -9,9 +9,9 @@ Building another Git synchronizer, traffic controller, or ReplicaSet manager wou
 
 ## Decision
 
-Argo CD owns Git-to-cluster synchronization. Argo Rollouts owns ReplicaSets, traffic weights, pauses, aborts, and AnalysisRun lifecycle. ReleaseGuard owns its constrained deployment DSL, policy validation, orchestration decisions, resource rendering, metric-gate contract, operational actions, and audit evidence.
+Argo CD owns Git-to-cluster synchronization. Argo Rollouts owns ReplicaSets, traffic weights, pauses, aborts, AnalysisRun lifecycle, and the pod-template-hash component of stable/canary Service selectors. ReleaseGuard owns its constrained deployment DSL, policy validation, orchestration decisions, resource rendering, metric-gate contract, operational actions, and audit evidence.
 
-ReleaseGuard generates Argo and ingress resources with deterministic names and reconciles only documented fields. It reports field-manager conflicts instead of silently forcing ownership.
+ReleaseGuard generates Argo and ingress resources with deterministic names and reconciles only documented fields. Service identity selectors exclude release generation so they remain valid across Rollout updates. ReleaseGuard initializes a Service selector, then omits the selector from later server-side applies after Argo installs a pod-template hash; it observes and verifies Argo's result instead of competing for the field. Other field-manager conflicts are reported instead of silently forced.
 
 ## Consequences
 

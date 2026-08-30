@@ -6,10 +6,13 @@ import io.javaoperatorsdk.operator.api.reconciler.Cleaner;
 import io.javaoperatorsdk.operator.api.reconciler.Context;
 import io.javaoperatorsdk.operator.api.reconciler.ControllerConfiguration;
 import io.javaoperatorsdk.operator.api.reconciler.DeleteControl;
+import io.javaoperatorsdk.operator.api.reconciler.EventSourceContext;
 import io.javaoperatorsdk.operator.api.reconciler.Reconciler;
 import io.javaoperatorsdk.operator.api.reconciler.UpdateControl;
+import io.javaoperatorsdk.operator.processing.event.source.EventSource;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
@@ -54,8 +57,18 @@ public final class ReleasePlanReconciler implements Reconciler<ReleasePlan>, Cle
   }
 
   @Override
+  public List<EventSource<?, ReleasePlan>> prepareEventSources(
+      EventSourceContext<ReleasePlan> context) {
+    return ReleasePlanEventSources.create(context);
+  }
+
+  @Override
   public UpdateControl<ReleasePlan> reconcile(ReleasePlan resource, Context<ReleasePlan> context) {
-    ReconciliationPlan plan = planner.plan(resource, runtime.acceptedPolicies(resource, context));
+    ReconciliationPlan plan =
+        planner.plan(
+            resource,
+            runtime.acceptedPolicies(resource, context),
+            runtime.observeRollout(resource, context));
     if (plan.hasDesiredResources()) {
       runtime.apply(plan.desiredResources(), context);
     }

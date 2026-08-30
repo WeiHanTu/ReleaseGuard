@@ -168,6 +168,22 @@ assert_detached() {
   fi
 }
 
+start_candidate_release() {
+  local marker="$1"
+  # Week 4 implements gate-driven terminal transitions. Simulate that future gate result here so
+  # this Week 2 test can exercise a real second ReleasePlan generation rather than mutate a child.
+  ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" patch releaseplan checkout \
+    --subresource=status --type=merge -p '{"status":{"phase":"Succeeded"}}' >/dev/null
+  wait_for_value releaseplan/checkout '{.status.phase}' Succeeded 30
+  ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" patch releaseplan checkout --type=merge \
+    -p "{\"spec\":{\"workload\":{\"podTemplate\":{\"metadata\":{\"labels\":{\"releaseguard.e2e/revision\":\"${marker}\"}}}}}}" \
+    >/dev/null
+  local generation
+  generation="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get releaseplan checkout \
+    -o jsonpath='{.metadata.generation}')"
+  wait_for_value releaseplan/checkout '{.status.observedGeneration}' "${generation}" 30
+}
+
 cleanup() {
   local exit_code=$?
   trap - EXIT
@@ -250,16 +266,25 @@ wait_for_value releaseplan/checkout '{.status.phase}' Bootstrapping 60
 wait_for_value rollout/checkout '{.status.phase}' Healthy 180
 stable_revision="$(wait_for_nonempty rollout/checkout '{.status.stableRS}' 30)"
 wait_for_nonempty endpoints/checkout-stable '{.subsets[0].addresses[0].ip}' 60 >/dev/null
+wait_for_value releaseplan/checkout \
+  '{.status.stableRevision}' "checkout-${stable_revision}" 60
 
-log "Starting a candidate revision and pausing at five percent canary weight"
-${KUBECTL_BIN} -n "${TEST_NAMESPACE}" patch rollout checkout --type=merge \
-  -p '{"spec":{"template":{"metadata":{"labels":{"releaseguard.e2e/revision":"candidate"}}}}}' \
-  >/dev/null
+log "Starting a candidate ReleasePlan generation and pausing at five percent canary weight"
+start_candidate_release candidate
 wait_for_value rollout/checkout '{.status.phase}' Paused 180
+wait_for_value releaseplan/checkout '{.status.phase}' Paused 60
+wait_for_value releaseplan/checkout '{.status.currentStep}' 0 60
 wait_for_value ingress/checkout-checkout-canary \
   '{.metadata.annotations.nginx\.ingress\.kubernetes\.io/canary-weight}' 5 60
 wait_for_value service/checkout-stable \
   '{.spec.selector.rollouts-pod-template-hash}' "${stable_revision}" 60
+candidate_revision="$(wait_for_nonempty rollout/checkout '{.status.currentPodHash}' 30)"
+wait_for_value releaseplan/checkout \
+  '{.status.canaryRevision}' "checkout-${candidate_revision}" 60
+delete_releaseplan_phase="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get releaseplan checkout \
+  -o jsonpath='{.status.phase}')"
+delete_releaseplan_step="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get releaseplan checkout \
+  -o jsonpath='{.status.currentStep}')"
 
 log "Stopping Argo Rollouts to verify the finalizer does not trust its own abort request"
 ${KUBECTL_BIN} -n argo-rollouts scale deployment/argo-rollouts --replicas=0 >/dev/null
@@ -326,17 +351,21 @@ wait_for_value releaseplan/checkout '{.status.phase}' Bootstrapping 60
 wait_for_value rollout/checkout '{.status.phase}' Healthy 180
 orphan_stable_revision="$(wait_for_nonempty rollout/checkout '{.status.stableRS}' 30)"
 wait_for_nonempty endpoints/checkout-stable '{.subsets[0].addresses[0].ip}' 60 >/dev/null
+wait_for_value releaseplan/checkout \
+  '{.status.stableRevision}' "checkout-${orphan_stable_revision}" 60
 orphan_stable_replicaset="$(wait_for_replicaset_by_hash "${orphan_stable_revision}" 30)"
 orphan_plan_uid="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get releaseplan checkout \
   -o jsonpath='{.metadata.uid}')"
 
-${KUBECTL_BIN} -n "${TEST_NAMESPACE}" patch rollout checkout --type=merge \
-  -p '{"spec":{"template":{"metadata":{"labels":{"releaseguard.e2e/revision":"orphan-candidate"}}}}}' \
-  >/dev/null
+start_candidate_release orphan-candidate
 wait_for_value rollout/checkout '{.status.phase}' Paused 180
+wait_for_value releaseplan/checkout '{.status.phase}' Paused 60
+wait_for_value releaseplan/checkout '{.status.currentStep}' 0 60
 wait_for_value ingress/checkout-checkout-canary \
   '{.metadata.annotations.nginx\.ingress\.kubernetes\.io/canary-weight}' 5 60
 orphan_candidate_revision="$(wait_for_nonempty rollout/checkout '{.status.currentPodHash}' 30)"
+wait_for_value releaseplan/checkout \
+  '{.status.canaryRevision}' "checkout-${orphan_candidate_revision}" 60
 orphan_candidate_replicaset="checkout-${orphan_candidate_revision}"
 
 log "Deleting with OrphanStable and verifying a controller-independent stable workload"
@@ -379,12 +408,22 @@ assert_detached "replicaset/${orphan_stable_replicaset}" "Rollout/checkout"
 assert_detached service/checkout-stable "ReleasePlan/checkout"
 assert_detached ingress/checkout "ReleasePlan/checkout"
 
+if grep -Eq 'FieldManagerConflict|Exhausted retries|Uncaught error' "${OPERATOR_LOG}"; then
+  echo "ReleaseGuard operator log contains a reconciliation ownership or retry failure" >&2
+  exit 1
+fi
+
 cat >"${EVIDENCE_FILE}" <<EOF
 kind_version=$(${KIND_BIN} version)
 kubernetes_version=$(${KUBECTL_BIN} version -o json | tr -d '\n')
 argo_rollouts_version=${ARGO_ROLLOUTS_VERSION}
 argo_install_sha256=${ARGO_INSTALL_SHA}
 delete_stable_revision=${delete_stable_revision}
+delete_candidate_revision=${candidate_revision}
+releaseplan_phase_at_canary=${delete_releaseplan_phase}
+releaseplan_current_step_at_canary=${delete_releaseplan_step}
+child_event_sources=Rollout,Service,Ingress
+service_selector_handoff_conflicts=0
 canary_weight_before_outage=5
 abort_request_held_finalizer_without_controller=true
 delete_argo_aborted_at=${delete_aborted_at}
