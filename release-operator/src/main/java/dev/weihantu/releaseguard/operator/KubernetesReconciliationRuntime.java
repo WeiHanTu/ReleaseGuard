@@ -13,6 +13,7 @@ import io.fabric8.kubernetes.api.model.ObjectMeta;
 import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.apps.ReplicaSet;
 import io.fabric8.kubernetes.api.model.networking.v1.Ingress;
+import io.fabric8.kubernetes.client.KubernetesClientException;
 import io.fabric8.kubernetes.client.dsl.Resource;
 import io.fabric8.kubernetes.client.dsl.base.PatchContext;
 import io.fabric8.kubernetes.client.dsl.base.PatchType;
@@ -24,12 +25,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.locks.LockSupport;
+import java.util.function.UnaryOperator;
 
 final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
   private static final String CANARY_WEIGHT_ANNOTATION =
       "nginx.ingress.kubernetes.io/canary-weight";
   private static final String ORPHAN_STABLE_REVISION_ANNOTATION =
       "delivery.weihantu.dev/orphan-stable-revision";
+  private static final int CLEANUP_EDIT_ATTEMPTS = 5;
+  private static final long CLEANUP_EDIT_INITIAL_BACKOFF_NANOS = 25_000_000L;
 
   @Override
   public Map<String, MetricPolicySpec> acceptedPolicies(
@@ -445,10 +450,8 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
   }
 
   private static <T extends HasMetadata> void detach(Resource<T> resource, String ownerUid) {
-    if (resource.get() == null) {
-      return;
-    }
-    resource.edit(
+    editForCleanup(
+        resource,
         current -> {
           ObjectMeta metadata = current.getMetadata();
           if (metadata.getOwnerReferences() != null) {
@@ -468,10 +471,11 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
 
   private static void prepareStableServiceForOrphan(
       Resource<Service> resource, String ownerUid, String stableReplicaSet) {
-    if (resource.get() == null || stableReplicaSet == null || stableReplicaSet.isBlank()) {
+    if (stableReplicaSet == null || stableReplicaSet.isBlank()) {
       return;
     }
-    resource.edit(
+    editForCleanup(
+        resource,
         current -> {
           ObjectMeta metadata = current.getMetadata();
           if (metadata.getOwnerReferences() != null) {
@@ -504,10 +508,8 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
 
   private static void detachStableReplicaSet(
       Resource<ReplicaSet> resource, String ownerUid, String rolloutName) {
-    if (resource.get() == null) {
-      return;
-    }
-    resource.edit(
+    editForCleanup(
+        resource,
         current -> {
           ObjectMeta metadata = current.getMetadata();
           if (metadata.getOwnerReferences() != null) {
@@ -527,5 +529,32 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
           }
           return current;
         });
+  }
+
+  private static <T extends HasMetadata> void editForCleanup(
+      Resource<T> resource, UnaryOperator<T> editor) {
+    retryCleanupEdit(
+        () -> {
+          if (resource.get() != null) {
+            resource.edit(editor);
+          }
+        });
+  }
+
+  static void retryCleanupEdit(Runnable edit) {
+    for (int attempt = 0; attempt < CLEANUP_EDIT_ATTEMPTS; attempt++) {
+      try {
+        edit.run();
+        return;
+      } catch (KubernetesClientException exception) {
+        if (exception.getCode() == 404) {
+          return;
+        }
+        if (exception.getCode() != 409 || attempt == CLEANUP_EDIT_ATTEMPTS - 1) {
+          throw exception;
+        }
+        LockSupport.parkNanos(CLEANUP_EDIT_INITIAL_BACKOFF_NANOS << attempt);
+      }
+    }
   }
 }
