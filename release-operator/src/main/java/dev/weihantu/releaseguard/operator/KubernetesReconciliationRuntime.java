@@ -277,7 +277,7 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
   }
 
   @Override
-  public void publishCleanupStatus(ReleasePlan plan, Context<ReleasePlan> context) {
+  public void publishStatus(ReleasePlan plan, Context<ReleasePlan> context) {
     context.resourceOperations().updatePrimaryStatus(plan);
   }
 

@@ -2,6 +2,7 @@ package dev.weihantu.releaseguard.operator;
 
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlan;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanSpec.DeletionPolicy;
+import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanStatus;
 import io.javaoperatorsdk.operator.api.reconciler.Cleaner;
 import io.javaoperatorsdk.operator.api.reconciler.Context;
 import io.javaoperatorsdk.operator.api.reconciler.ControllerConfiguration;
@@ -72,9 +73,9 @@ public final class ReleasePlanReconciler implements Reconciler<ReleasePlan>, Cle
     if (plan.hasDesiredResources()) {
       runtime.apply(plan.desiredResources(), context);
     }
-    resource.setStatus(plan.status());
+    publishStatusIfChanged(resource, plan.status(), context);
 
-    UpdateControl<ReleasePlan> control = UpdateControl.patchStatus(resource);
+    UpdateControl<ReleasePlan> control = UpdateControl.noUpdate();
     if (plan.requeueAfter() != null) {
       control.rescheduleAfter(plan.requeueAfter().toMillis(), TimeUnit.MILLISECONDS);
     }
@@ -84,14 +85,14 @@ public final class ReleasePlanReconciler implements Reconciler<ReleasePlan>, Cle
   @Override
   public DeleteControl cleanup(ReleasePlan resource, Context<ReleasePlan> context) {
     if (cleanupDeadlineExceeded(resource)) {
-      resource.setStatus(
+      ReleasePlanStatus deadlineStatus =
           cleanupStatusFactory.deleting(
               resource,
               "CleanupDeadlineExceeded",
               "Cleanup exceeded its deadline; deleting generated resources as a fail-safe",
-              true));
+              true);
       runtime.deleteManagedChildren(resource, context);
-      runtime.publishCleanupStatus(resource, context);
+      publishStatusIfChanged(resource, deadlineStatus, context);
       return DeleteControl.defaultDelete();
     }
 
@@ -125,9 +126,10 @@ public final class ReleasePlanReconciler implements Reconciler<ReleasePlan>, Cle
           }
           case Complete -> throw new IllegalStateException("complete cleanup was handled earlier");
         };
-    resource.setStatus(
-        cleanupStatusFactory.deleting(resource, progress.reason(), progress.message(), false));
-    runtime.publishCleanupStatus(resource, context);
+    publishStatusIfChanged(
+        resource,
+        cleanupStatusFactory.deleting(resource, progress.reason(), progress.message(), false),
+        context);
     return DeleteControl.noFinalizerRemoval()
         .rescheduleAfter(cleanupPolicy.requeueAfter().toMillis());
   }
@@ -139,6 +141,15 @@ public final class ReleasePlanReconciler implements Reconciler<ReleasePlan>, Cle
         && Instant.parse(deletionTimestamp)
             .plus(cleanupPolicy.deadline())
             .isBefore(clock.instant());
+  }
+
+  private void publishStatusIfChanged(
+      ReleasePlan resource, ReleasePlanStatus desired, Context<ReleasePlan> context) {
+    if (Objects.equals(resource.getStatus(), desired)) {
+      return;
+    }
+    resource.setStatus(desired);
+    runtime.publishStatus(resource, context);
   }
 
   private static DeletionPolicy deletionPolicy(ReleasePlan resource) {

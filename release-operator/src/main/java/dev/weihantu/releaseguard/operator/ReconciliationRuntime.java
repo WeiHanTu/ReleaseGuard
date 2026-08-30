@@ -22,5 +22,5 @@ interface ReconciliationRuntime {
 
   void orphanStableResources(ReleasePlan plan, Context<ReleasePlan> context);
 
-  void publishCleanupStatus(ReleasePlan plan, Context<ReleasePlan> context);
+  void publishStatus(ReleasePlan plan, Context<ReleasePlan> context);
 }

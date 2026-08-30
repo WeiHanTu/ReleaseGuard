@@ -31,14 +31,14 @@ class ReleasePlanReconcilerTest {
 
     var validationControl = reconciler.reconcile(plan, null);
 
-    assertTrue(validationControl.isPatchStatus());
+    assertTrue(validationControl.isNoUpdate());
     assertTrue(validationControl.getScheduleDelay().isPresent());
     assertEquals(Phase.Validating, plan.getStatus().phase());
     assertTrue(runtime.applied.isEmpty());
 
     var applyControl = reconciler.reconcile(plan, null);
 
-    assertTrue(applyControl.isPatchStatus());
+    assertTrue(applyControl.isNoUpdate());
     assertFalse(applyControl.getScheduleDelay().isPresent());
     assertEquals(Phase.Bootstrapping, plan.getStatus().phase());
     assertEquals(4, runtime.applied.size());
@@ -49,6 +49,11 @@ class ReleasePlanReconcilerTest {
 
     assertEquals("checkout-stable-hash", plan.getStatus().stableRevision());
     assertEquals("BootstrapReadyAwaitingGate", conditionReason(plan, "Ready"));
+
+    int convergedStatusWrites = runtime.statusWrites;
+    reconciler.reconcile(plan, null);
+
+    assertEquals(convergedStatusWrites, runtime.statusWrites);
   }
 
   @Test
@@ -93,7 +98,7 @@ class ReleasePlanReconcilerTest {
     var complete = reconciler.cleanup(plan, null);
 
     assertTrue(complete.isRemoveFinalizer());
-    assertEquals(2, runtime.cleanupStatusWrites);
+    assertEquals(2, runtime.statusWrites);
   }
 
   @Test
@@ -194,7 +199,7 @@ class ReleasePlanReconcilerTest {
     private int abortRequests;
     private int deleteRequests;
     private int orphanRequests;
-    private int cleanupStatusWrites;
+    private int statusWrites;
 
     @Override
     public Map<String, MetricPolicySpec> acceptedPolicies(
@@ -234,8 +239,8 @@ class ReleasePlanReconcilerTest {
     }
 
     @Override
-    public void publishCleanupStatus(ReleasePlan plan, Context<ReleasePlan> context) {
-      cleanupStatusWrites++;
+    public void publishStatus(ReleasePlan plan, Context<ReleasePlan> context) {
+      statusWrites++;
     }
   }
 }

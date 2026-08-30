@@ -20,9 +20,9 @@ Installing Argo CD, Kafka, and Grafana is not sufficient. ReleaseGuard must own 
 
 ## 2. Status and evidence policy
 
-Current status: **Week 2 operator control loop in progress**.
+Current status: **Week 2 roadmap milestone complete; Week 3 packaging and GitOps next**.
 
-The Java 21 multi-module build, four API models, semantic validators, deterministic CRD generation, architecture decisions, contract tests, minimal CI, and initial operator control-loop slices are implemented. Week 2 remains in progress; Week 3 onward is planned. Numbers marked as targets are acceptance criteria, not benchmark results or resume claims.
+The Java 21 multi-module build, four API models, semantic validators, deterministic CRD generation, architecture decisions, contract tests, minimal CI, and Week 2 operator control loop are implemented. Week 3 onward is planned. Numbers marked as targets are acceptance criteria, not benchmark results or resume claims.
 
 Evidence rules:
 
@@ -569,13 +569,13 @@ Exit achieved: `./gradlew clean check` regenerates and compares all four committ
 
 ### Week 2: operator control loop
 
-- Implement ReleasePlan reconciler, child ownership, status, retries, and finalizer.
-- Render deterministic Argo Rollout resources.
-- Test duplicate reconciliation, resource deletion, and optimistic-concurrency conflicts.
+- [x] Implement ReleasePlan reconciler, child ownership, status, retries, and finalizer.
+- [x] Render deterministic Argo Rollout resources.
+- [x] Test duplicate reconciliation, resource deletion, and optimistic-concurrency conflicts.
 
-Progress: the Java Operator SDK adapter, generation-scoped validation, generation-stable selectors, fail-closed Argo rendering, server-side-apply ownership handoff, eight-attempt exponential retry, and bounded `Delete`/`OrphanStable` finalization are implemented. Rollout, Service, and Ingress informer events map back to the owning plan; only generation-current Argo status updates phase, logical step, and stable/canary revisions. A checksum-pinned Kind test uses an explicit simulated bootstrap-gate result to create a second ReleasePlan generation, observes its real 5% pause as `Paused`/step `0`, and runs both deletion policies. `Delete` holds its finalizer through an Argo outage and captures abort acknowledgment, `5% -> 0%` restoration, and child deletion. `OrphanStable` retains exactly one two-replica stable ReplicaSet plus stable networking and survives Argo/ReleaseGuard restarts without canary recreation. It does not run ingress-nginx, so this is control-plane and ready-endpoint evidence rather than request-routing evidence, and it does not prove automated promotion. Automated gate-driven terminal transitions and optimistic-concurrency conflict injection remain incomplete; Week 2 has not reached its exit criterion.
+Implemented evidence includes the Java Operator SDK adapter, generation-scoped validation, generation-stable selectors, fail-closed Argo rendering, server-side-apply ownership handoff, eight-attempt exponential retry, and bounded `Delete`/`OrphanStable` finalization. Rollout, Service, and Ingress informer events map back to the owning plan; only generation-current Argo status updates phase, logical step, and stable/canary revisions. A kube-apiserver integration test injects a concurrent primary-status update immediately before a resource-versioned write, observes a real `409`, verifies full recomputation from the newer version, preserves concurrent phase and revision evidence, and converges without duplicate children. A checksum-pinned Kind test uses an explicit simulated bootstrap-gate result to create a second ReleasePlan generation, observes its real 5% pause as `Paused`/step `0`, and runs both deletion policies. `Delete` holds its finalizer through an Argo outage and captures abort acknowledgment, `5% -> 0%` restoration, and child deletion. `OrphanStable` retains exactly one two-replica stable ReplicaSet plus stable networking and survives Argo/ReleaseGuard restarts without canary recreation. It does not run ingress-nginx, so this is control-plane and ready-endpoint evidence rather than request-routing evidence, and it does not prove automated promotion. Gate-driven terminal transitions remain planned for Week 4.
 
-Exit: a plan converges repeatedly without duplicate or oscillating resources.
+Exit achieved: unchanged, duplicate-event, restart, deletion, and conflict-injected reconciliations converge without duplicate or oscillating resources.
 
 ### Week 3: packaging and GitOps
 

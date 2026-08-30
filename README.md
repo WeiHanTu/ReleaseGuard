@@ -2,7 +2,7 @@
 
 ReleaseGuard is an implementation-in-progress GitOps progressive-delivery control plane for Kubernetes. Its target workflow lets developers describe a rollout declaratively, reconcile that desired state through a Java operator, evaluate canaries against Prometheus metrics, and retain an auditable deployment-event history in Kafka.
 
-> **Status:** Week 1 contracts and the initial Week 2 reconciliation, observation, and finalization slices are implemented. Automated metric-driven progression, external integrations, deployment packaging, and operational measurements are not implemented yet. No production-readiness claim is made.
+> **Status:** Week 1 contracts and the Week 2 operator-control-loop milestone are implemented. Automated metric-driven progression, external integrations, deployment packaging, and operational measurements are not implemented yet. No production-readiness claim is made.
 
 ## Implemented
 
@@ -13,6 +13,7 @@ ReleaseGuard is an implementation-in-progress GitOps progressive-delivery contro
 - A Java Operator SDK reconciler that records generation-scoped validation before applying child resources and refuses to publish progress status when an apply fails.
 - Deterministic server-side-apply rendering for stable/canary Services, ingress-nginx Ingress, and Argo Rollout resources with owner references and generation-stable workload selectors.
 - Java Operator SDK informer sources for managed Rollout, Service, and Ingress changes, with generation-current projection of Argo phase, logical step, stable hash, and canary hash into `ReleasePlan` status.
+- Resource-versioned primary status updates with full-reconciliation conflict recovery; a kube-apiserver integration test injects a real `409 Conflict`, verifies a fresh resource version, preserves the concurrent phase and revisions, and converges to the same four child resources.
 - An explicit field-ownership handoff: ReleaseGuard initializes Service identity selectors, then omits the selector after Argo installs its pod-template hash while continuing to verify traffic state.
 - Fail-closed indefinite Argo pauses until metric-gate integration exists, plus a lightweight Kubernetes API-server test proving repeated apply does not duplicate resources.
 - A bounded cleanup finalizer that requests Argo abort, verifies controller acknowledgment, stable ready endpoints, and zero canary ingress weight, then either deletes every child or retains a controller-independent stable ReplicaSet, Service, and Ingress.

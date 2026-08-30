@@ -6,7 +6,7 @@
 | Specification version | 0.1.0 |
 | Target API version | `delivery.weihantu.dev/v1alpha1` |
 | Last updated | 2026-08-29 |
-| Implementation status | Week 2 in progress; not conformant with all v1 requirements |
+| Implementation status | Week 2 control-loop milestone implemented; not conformant with all v1 requirements |
 
 This document is the normative specification for ReleaseGuard v1. The implementation roadmap and release-evidence policy live in [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md).
 
@@ -452,7 +452,7 @@ For every `ReleasePlan` event, the operator MUST execute these logical steps:
 
 - `RG-REC-001`: Repeating reconciliation against unchanged input MUST converge without semantic child-resource changes.
 - `RG-REC-002`: The reconciler MUST tolerate duplicate, delayed, and reordered watch events.
-- `RG-REC-003`: Status conflicts MUST cause a fresh read and recomputation; stale calculated state MUST NOT be blindly retried.
+- `RG-REC-003`: Primary status writes MUST carry the resource version read for that reconciliation. A conflict MUST cause a fresh read and full recomputation; a stale calculated status MUST NOT be blindly retried.
 - `RG-REC-004`: External calls MUST have deadlines, bounded retries, exponential backoff, and cancellation on shutdown.
 - `RG-REC-005`: Validation failure MUST create no rollout-affecting children and MUST set `Failed` with a machine-readable reason.
 - `RG-REC-006`: A dependency outage MUST NOT be represented as a successful or healthy release.
