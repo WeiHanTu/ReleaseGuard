@@ -12,6 +12,7 @@ import dev.weihantu.releaseguard.gate.prometheus.PrometheusQueryClient;
 import dev.weihantu.releaseguard.gate.prometheus.PrometheusQueryException;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -33,6 +34,7 @@ public class GateEvaluationService {
   private final EvidenceDigester evidenceDigester;
   private final Duration requestTimeout;
   private final MeterRegistry meterRegistry;
+  private final Clock clock;
 
   public GateEvaluationService(
       GateRequestValidator validator,
@@ -40,16 +42,19 @@ public class GateEvaluationService {
       PrometheusQueryClient prometheus,
       EvidenceDigester evidenceDigester,
       GateProperties properties,
-      MeterRegistry meterRegistry) {
+      MeterRegistry meterRegistry,
+      Clock clock) {
     this.validator = validator;
     this.queryRenderer = queryRenderer;
     this.prometheus = prometheus;
     this.evidenceDigester = evidenceDigester;
     this.requestTimeout = properties.requestTimeout();
     this.meterRegistry = meterRegistry;
+    this.clock = clock;
   }
 
   public GateEvaluationResponse evaluate(GateEvaluationRequest request) {
+    request = withEffectiveEvaluationTime(request);
     validator.validate(request);
     MetricPolicySpec policy = request.policy().spec();
     Duration window = KubernetesDuration.parse(policy.window()).orElseThrow();
@@ -164,6 +169,23 @@ public class GateEvaluationService {
             ? "WithinAbsoluteLimit"
             : "WithinAbsoluteAndBaselineLimits";
     return response(request, Decision.Pass, reason, state, windowStart, windowEnd);
+  }
+
+  private GateEvaluationRequest withEffectiveEvaluationTime(GateEvaluationRequest request) {
+    if (request == null || request.evaluationTime() != null) {
+      return request;
+    }
+    return new GateEvaluationRequest(
+        request.releaseId(),
+        request.step(),
+        request.mode(),
+        request.namespace(),
+        request.releaseName(),
+        request.policy(),
+        request.stableRevision(),
+        request.canaryRevision(),
+        request.thresholds(),
+        clock.instant());
   }
 
   private QueryResult query(

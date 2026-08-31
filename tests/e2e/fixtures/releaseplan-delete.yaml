@@ -34,8 +34,9 @@ spec:
       - policyRef: http-error-ratio
         maxCanaryValue: 0.01
         maxDeltaFromStable: 0.005
-        consecutiveFailures: 3
+        failureLimit: 3
         consecutiveSuccesses: 2
+        inconclusiveLimit: 1
   failurePolicy:
     metricUnavailable: Pause
     gateFailed: Rollback

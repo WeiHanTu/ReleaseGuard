@@ -46,7 +46,7 @@ class ReleasePlanPlannerTest {
     assertEquals("checkout-0123456789ab", bootstrapping.status().canaryRevision());
     assertEquals(
         new ReleasePlanStatus.ResourceReference("checkout"), bootstrapping.status().rolloutRef());
-    assertEquals(4, bootstrapping.desiredResources().size());
+    assertEquals(5, bootstrapping.desiredResources().size());
     assertNull(bootstrapping.requeueAfter());
   }
 
@@ -74,7 +74,7 @@ class ReleasePlanPlannerTest {
 
     assertEquals(Phase.Progressing, result.status().phase());
     assertEquals("checkout-previous", result.status().stableRevision());
-    assertEquals(4, result.desiredResources().size());
+    assertEquals(5, result.desiredResources().size());
   }
 
   @Test

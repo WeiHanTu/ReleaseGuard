@@ -43,8 +43,9 @@ public record ReleasePlanSpec(
       @Required @Size(min = 1) String policyRef,
       Double maxCanaryValue,
       Double maxDeltaFromStable,
-      @Min(1) Integer consecutiveFailures,
-      @Min(1) Integer consecutiveSuccesses) {}
+      @Required @Min(1) Integer failureLimit,
+      @Required @Min(1) Integer consecutiveSuccesses,
+      @Required @Min(1) Integer inconclusiveLimit) {}
 
   public record FailurePolicy(
       @Required MetricUnavailable metricUnavailable,

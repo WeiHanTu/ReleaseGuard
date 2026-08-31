@@ -47,6 +47,36 @@ class GateEvaluationServiceTest {
   }
 
   @Test
+  void assignsServerTimeWhenTheCallerOmitsEvaluationTime() {
+    GateEvaluationRequest source = GateTestFixtures.request();
+    GateEvaluationRequest withoutEvaluationTime =
+        new GateEvaluationRequest(
+            source.releaseId(),
+            source.step(),
+            source.mode(),
+            source.namespace(),
+            source.releaseName(),
+            source.policy(),
+            source.stableRevision(),
+            source.canaryRevision(),
+            source.thresholds(),
+            null);
+    GateEvaluationService service =
+        GateTestFixtures.service(
+            observations(
+                Map.of(
+                    GateTestFixtures.CANARY_VALUE_QUERY, 0.004,
+                    GateTestFixtures.CANARY_SAMPLES_QUERY, 180.0,
+                    GateTestFixtures.STABLE_VALUE_QUERY, 0.002,
+                    GateTestFixtures.STABLE_SAMPLES_QUERY, 1200.0)));
+
+    GateEvaluationResponse response = service.evaluate(withoutEvaluationTime);
+
+    assertEquals(GateEvaluationResponse.Decision.Pass, response.decision());
+    assertEquals(GateTestFixtures.EVALUATION_TIME, response.windowEnd());
+  }
+
+  @Test
   void returnsFailForACompletedThresholdBreach() {
     GateEvaluationService service =
         GateTestFixtures.service(

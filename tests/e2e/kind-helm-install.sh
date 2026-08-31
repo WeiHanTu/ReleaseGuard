@@ -48,7 +48,7 @@ diagnostics() {
   ${KUBECTL_BIN} -n "${OPERATOR_NAMESPACE}" describe deployment/releaseguard-metric-gate 2>&1 || true
   ${KUBECTL_BIN} -n "${OPERATOR_NAMESPACE}" logs deployment/releaseguard --tail=200 2>&1 || true
   ${KUBECTL_BIN} -n "${OPERATOR_NAMESPACE}" logs deployment/releaseguard-metric-gate --tail=200 2>&1 || true
-  ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get releaseplans,rollouts,services,ingresses -o wide 2>&1 || true
+  ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get releaseplans,rollouts,analysistemplates,analysisruns,services,ingresses -o wide 2>&1 || true
   ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get events --sort-by=.lastTimestamp 2>&1 || true
 }
 
@@ -86,6 +86,7 @@ trap 'exit 143' TERM
 command -v "${KUBECTL_BIN}" >/dev/null
 command -v curl >/dev/null
 command -v openssl >/dev/null
+command -v jq >/dev/null
 docker image inspect "${OPERATOR_IMAGE}" >/dev/null
 docker image inspect "${GATE_IMAGE}" >/dev/null
 mkdir -p "${OUTPUT_DIRECTORY}"
@@ -143,6 +144,7 @@ ${KUBECTL_BIN} -n "${OPERATOR_NAMESPACE}" rollout status \
 operator_service_account="system:serviceaccount:${OPERATOR_NAMESPACE}:releaseguard"
 [[ "$(${KUBECTL_BIN} auth can-i --as "${operator_service_account}" list releaseplans --all-namespaces)" == "yes" ]]
 [[ "$(${KUBECTL_BIN} auth can-i --as "${operator_service_account}" patch rollouts.argoproj.io --all-namespaces)" == "yes" ]]
+[[ "$(${KUBECTL_BIN} auth can-i --as "${operator_service_account}" patch analysistemplates.argoproj.io --all-namespaces)" == "yes" ]]
 [[ "$(${KUBECTL_BIN} auth can-i --as "${operator_service_account}" get secrets --all-namespaces)" == "no" ]]
 [[ "$(${KUBECTL_BIN} auth can-i --as "${operator_service_account}" delete namespaces)" == "no" ]]
 
@@ -206,6 +208,8 @@ fi
 
 log "Reconciling a ReleasePlan through the in-cluster operator"
 ${KUBECTL_BIN} create namespace "${TEST_NAMESPACE}"
+${KUBECTL_BIN} -n "${TEST_NAMESPACE}" create secret generic releaseguard-metric-gate-auth \
+  --from-literal="token=${gate_auth_token}" >/dev/null
 ${KUBECTL_BIN} apply -f "${REPOSITORY_ROOT}/config/examples/metricpolicy-http-errors.yaml" >/dev/null
 policy_generation="$(${KUBECTL_BIN} get metricpolicy http-error-ratio -o jsonpath='{.metadata.generation}')"
 ${KUBECTL_BIN} patch metricpolicy http-error-ratio --subresource=status --type=merge \
@@ -215,6 +219,37 @@ ${KUBECTL_BIN} apply -f "${REPOSITORY_ROOT}/tests/e2e/fixtures/releaseplan-delet
 ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" wait \
   --for=jsonpath='{.status.phase}'=Bootstrapping releaseplan/checkout --timeout=60s
 ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" wait --for=create rollout/checkout --timeout=60s
+${KUBECTL_BIN} -n "${TEST_NAMESPACE}" wait \
+  --for=create analysistemplate/checkout-gates-g1 --timeout=60s
+
+analysis_template_json="${OUTPUT_DIRECTORY}/analysis-template.json"
+analysis_run_json="${OUTPUT_DIRECTORY}/analysis-run.json"
+${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get analysistemplate checkout-gates-g1 -o json \
+  >"${analysis_template_json}"
+if grep -Fq "${gate_auth_token}" "${analysis_template_json}"; then
+  echo "Generated AnalysisTemplate embedded the gate token" >&2
+  exit 1
+fi
+snapshot_resource_version="$(jq -r '.spec.metrics[0].provider.web.jsonBody.policy.resourceVersion' "${analysis_template_json}")"
+[[ "${snapshot_resource_version}" == "$(${KUBECTL_BIN} get metricpolicy http-error-ratio -o jsonpath='{.metadata.resourceVersion}')" ]]
+
+jq --arg namespace "${TEST_NAMESPACE}" '
+  .kind = "AnalysisRun"
+  | .metadata = {name: "checkout-gate-contract", namespace: $namespace}
+  | .spec.args |= map(
+      if .name == "step" then . + {value: "0"}
+      elif .name == "mode" then . + {value: "Canary"}
+      elif .name == "stable-revision" then . + {value: "stable-test-hash"}
+      elif .name == "canary-revision" then . + {value: "canary-test-hash"}
+      else .
+      end
+    )
+' "${analysis_template_json}" >"${analysis_run_json}"
+${KUBECTL_BIN} apply -f "${analysis_run_json}" >/dev/null
+${KUBECTL_BIN} -n "${TEST_NAMESPACE}" wait \
+  --for=jsonpath='{.status.phase}'=Inconclusive analysisrun/checkout-gate-contract --timeout=90s
+analysis_run_phase="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get analysisrun checkout-gate-contract -o jsonpath='{.status.phase}')"
+analysis_measurement_phase="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get analysisrun checkout-gate-contract -o jsonpath='{.status.metricResults[0].phase}')"
 
 operator_image_id="$(${KUBECTL_BIN} -n "${OPERATOR_NAMESPACE}" get pod \
   -l app.kubernetes.io/component=operator -o jsonpath='{.items[0].status.containerStatuses[0].imageID}')"
@@ -259,4 +294,9 @@ cluster_wide_secret_read=no
 namespace_delete=no
 releaseplan_phase=Bootstrapping
 rollout_created=true
+analysis_template_created=true
+analysis_policy_resource_version=${snapshot_resource_version}
+analysis_token_embedded=false
+analysis_run_phase=${analysis_run_phase}
+analysis_measurement_phase=${analysis_measurement_phase}
 EOF

@@ -7,6 +7,7 @@ import dev.weihantu.releaseguard.api.validation.ReleasePlanValidationContext;
 import dev.weihantu.releaseguard.api.validation.ReleasePlanValidator;
 import dev.weihantu.releaseguard.api.validation.ValidationError;
 import dev.weihantu.releaseguard.api.validation.ValidationResult;
+import dev.weihantu.releaseguard.operator.MetricPolicySnapshot;
 import dev.weihantu.releaseguard.operator.ReleaseResourceRenderer;
 import io.fabric8.kubernetes.api.model.HasMetadata;
 import io.fabric8.kubernetes.client.utils.KubernetesSerialization;
@@ -110,7 +111,21 @@ final class PlanProcessor {
     plan.getMetadata().setUid(uid);
     plan.getMetadata().setGeneration(generation);
     try {
-      return new RenderedPlan(renderer.render(plan), uid, generation, syntheticUid);
+      Map<String, MetricPolicySnapshot> snapshots = new LinkedHashMap<>();
+      loaded
+          .policies()
+          .forEach(
+              (policyName, policy) -> {
+                String resourceVersion = policy.getMetadata().getResourceVersion();
+                snapshots.put(
+                    policyName,
+                    new MetricPolicySnapshot(
+                        resourceVersion == null || resourceVersion.isBlank()
+                            ? "offline-preview"
+                            : resourceVersion,
+                        policy.getSpec()));
+              });
+      return new RenderedPlan(renderer.render(plan, snapshots), uid, generation, syntheticUid);
     } catch (RuntimeException exception) {
       throw new CliException(ExitCode.INPUT, "cannot render plan: " + exception.getMessage());
     }

@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlan;
 import io.fabric8.kubeapitest.junit.EnableKubeAPIServer;
 import io.fabric8.kubernetes.api.model.EndpointsBuilder;
+import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
 import io.fabric8.kubernetes.api.model.HasMetadata;
 import io.fabric8.kubernetes.api.model.NamespaceBuilder;
 import io.fabric8.kubernetes.api.model.apps.ReplicaSet;
@@ -51,6 +52,28 @@ class KubernetesReconciliationRuntimeIT {
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
       """;
+  private static final String ANALYSIS_TEMPLATE_CRD =
+      """
+      apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      metadata:
+        name: analysistemplates.argoproj.io
+      spec:
+        group: argoproj.io
+        scope: Namespaced
+        names:
+          plural: analysistemplates
+          singular: analysistemplate
+          kind: AnalysisTemplate
+        versions:
+          - name: v1alpha1
+            served: true
+            storage: true
+            schema:
+              openAPIV3Schema:
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+      """;
 
   static KubernetesClient client;
 
@@ -58,7 +81,9 @@ class KubernetesReconciliationRuntimeIT {
   void repeatedServerSideApplyConvergesWithoutDuplicateResources() {
     prepareNamespace("demo");
     KubernetesReconciliationRuntime runtime = new KubernetesReconciliationRuntime();
-    List<HasMetadata> desired = new ReleaseResourceRenderer().render(OperatorTestFixtures.plan(11));
+    ReleasePlan plan = OperatorTestFixtures.plan(11);
+    List<HasMetadata> desired =
+        new ReleaseResourceRenderer().render(plan, OperatorTestFixtures.policies());
     Context<ReleasePlan> context = context(client);
 
     runtime.apply(desired, context);
@@ -66,6 +91,20 @@ class KubernetesReconciliationRuntimeIT {
 
     assertEquals(2, client.services().inNamespace("demo").list().getItems().size());
     assertEquals(1, client.network().v1().ingresses().inNamespace("demo").list().getItems().size());
+    GenericKubernetesResource template =
+        client
+            .genericKubernetesResources(
+                KubernetesReconciliationRuntime.analysisTemplateDefinition())
+            .inNamespace("demo")
+            .withName("checkout-gates-g11")
+            .get();
+    assertTrue(KubernetesReconciliationRuntime.isTrustedGenerationTemplate(plan, template));
+    MetricPolicySnapshot recovered =
+        KubernetesReconciliationRuntime.policySnapshots(template, java.util.Set.of("http-errors"))
+            .get("http-errors");
+    assertEquals("817263", recovered.resourceVersion());
+    assertEquals(OperatorTestFixtures.policy(), recovered.spec());
+    assertEquals(OperatorTestFixtures.policies(), runtime.acceptedPolicies(plan, context));
     assertEquals(
         1,
         client
@@ -126,7 +165,8 @@ class KubernetesReconciliationRuntimeIT {
             16,
             namespace,
             dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanSpec.DeletionPolicy.Delete);
-    runtime.apply(new ReleaseResourceRenderer().render(first), context);
+    runtime.apply(
+        new ReleaseResourceRenderer().render(first, OperatorTestFixtures.policies()), context);
 
     for (String serviceName : List.of("checkout-stable", "checkout-canary")) {
       client
@@ -147,7 +187,8 @@ class KubernetesReconciliationRuntimeIT {
             17,
             namespace,
             dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanSpec.DeletionPolicy.Delete);
-    runtime.apply(new ReleaseResourceRenderer().render(second), context);
+    runtime.apply(
+        new ReleaseResourceRenderer().render(second, OperatorTestFixtures.policies()), context);
 
     for (String serviceName : List.of("checkout-stable", "checkout-canary")) {
       var service = client.services().inNamespace(namespace).withName(serviceName).get();
@@ -297,7 +338,9 @@ class KubernetesReconciliationRuntimeIT {
             namespace,
             dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanSpec.DeletionPolicy.Delete);
     new KubernetesReconciliationRuntime()
-        .apply(new ReleaseResourceRenderer().render(plan), context(client));
+        .apply(
+            new ReleaseResourceRenderer().render(plan, OperatorTestFixtures.policies()),
+            context(client));
     return plan;
   }
 
@@ -309,6 +352,10 @@ class KubernetesReconciliationRuntimeIT {
         .serverSideApply();
     client
         .load(new ByteArrayInputStream(ROLLOUT_CRD.getBytes(StandardCharsets.UTF_8)))
+        .items()
+        .forEach(resource -> client.resource(resource).serverSideApply());
+    client
+        .load(new ByteArrayInputStream(ANALYSIS_TEMPLATE_CRD.getBytes(StandardCharsets.UTF_8)))
         .items()
         .forEach(resource -> client.resource(resource).serverSideApply());
   }

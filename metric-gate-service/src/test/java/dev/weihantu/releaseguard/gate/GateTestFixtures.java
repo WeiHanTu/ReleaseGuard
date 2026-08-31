@@ -12,6 +12,7 @@ import dev.weihantu.releaseguard.gate.prometheus.PrometheusObservation;
 import dev.weihantu.releaseguard.gate.prometheus.PrometheusQueryClient;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.net.URI;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
@@ -87,7 +88,8 @@ public final class GateTestFixtures {
         prometheus,
         new EvidenceDigester(objectMapper),
         new GateProperties(URI.create("http://127.0.0.1:9090"), Duration.ofSeconds(10), AUTH_TOKEN),
-        new SimpleMeterRegistry());
+        new SimpleMeterRegistry(),
+        Clock.fixed(EVALUATION_TIME, java.time.ZoneOffset.UTC));
   }
 
   public static PrometheusObservation observation(String query, double value) {

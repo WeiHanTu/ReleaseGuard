@@ -20,9 +20,9 @@ Installing Argo CD, Kafka, and Grafana is not sufficient. ReleaseGuard must own 
 
 ## 2. Status and evidence policy
 
-Current status: **Week 3 complete; Week 4 metric-gate contract and cluster packaging implemented, AnalysisRun integration next**.
+Current status: **Week 3 complete; Week 4 metric-gate packaging and generated AnalysisTemplate contract implemented, Rollout linkage next**.
 
-The Java 21 multi-module build, four API models, semantic validators, deterministic CRD generation, architecture decisions, contract tests, Week 2 operator control loop, hardened operator and metric-gate images, Helm installation path, Argo CD Git synchronization, offline plan CLI, and the authenticated stateless metric-gate service are implemented. Argo AnalysisRun integration and automated rollout outcomes remain planned. Numbers marked as targets are acceptance criteria, not benchmark results or resume claims.
+The Java 21 multi-module build, four API models, semantic validators, deterministic CRD generation, architecture decisions, contract tests, Week 2 operator control loop, hardened operator and metric-gate images, Helm installation path, Argo CD Git synchronization, offline plan CLI, authenticated stateless metric-gate service, and generation-scoped AnalysisTemplate rendering are implemented. Rollout-linked AnalysisRuns and automated rollout outcomes remain planned. Numbers marked as targets are acceptance criteria, not benchmark results or resume claims.
 
 Evidence rules:
 
@@ -202,9 +202,14 @@ spec:
     - policyRef: http-errors
       maxCanaryValue: 0.01
       maxDeltaFromStable: 0.005
-      consecutiveFailures: 3
+      failureLimit: 3
+      consecutiveSuccesses: 2
+      inconclusiveLimit: 3
     - policyRef: request-p95
       maxCanaryValue: 250
+      failureLimit: 3
+      consecutiveSuccesses: 2
+      inconclusiveLimit: 3
   failurePolicy:
     metricUnavailable: Pause
     gateFailed: Rollback
@@ -236,7 +241,7 @@ Policy behavior must define:
 - minimum samples;
 - absolute threshold;
 - optional delta from stable;
-- consecutive success and failure requirements;
+- consecutive-success, total-failure, and inconclusive limits;
 - NaN, empty, stale, timeout, and provider-error handling.
 
 ### 8.3 ReleaseAction
@@ -341,7 +346,7 @@ For each evaluation it receives:
 - policy reference and thresholds;
 - analysis start/end time;
 
-The gate service is stateless for a single evaluation. Generated Argo AnalysisRun configuration owns consecutive-success and consecutive-failure counting.
+The gate service is stateless for a single evaluation. Generated Argo AnalysisRun configuration owns consecutive-success counting plus total failed-measurement and inconclusive limits.
 
 It returns:
 

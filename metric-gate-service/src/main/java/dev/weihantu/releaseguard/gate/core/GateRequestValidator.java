@@ -37,9 +37,6 @@ public class GateRequestValidator {
     required(request.namespace(), "namespace", violations);
     required(request.releaseName(), "releaseName", violations);
     required(request.canaryRevision(), "canaryRevision", violations);
-    if (request.evaluationTime() == null) {
-      violations.add(new Violation("evaluationTime", "evaluationTime is required"));
-    }
     validateRevisions(request, violations);
     validatePolicy(request, violations);
     validateThresholds(request, violations);

@@ -12,6 +12,7 @@ docker build -f metric-gate-service/Dockerfile -t releaseguard-metric-gate:dev .
 kubectl create namespace releaseguard-system
 kubectl -n releaseguard-system create secret generic releaseguard-metric-gate-auth \
   --from-literal=token="$(openssl rand -hex 32)"
+# Provision the same Secret and token in each ReleasePlan namespace, preferably via External Secrets.
 helm upgrade --install releaseguard charts/releaseguard \
   --namespace releaseguard-system
 ```
@@ -27,8 +28,8 @@ helm upgrade --install releaseguard charts/releaseguard \
   --set metricGate.image.digest=sha256:<metric-gate-digest>
 ```
 
-The pods run as UID/GID 65532 with read-only root filesystems, all Linux capabilities dropped, and the runtime-default seccomp profile. The metric gate does not mount a service-account token and is exposed only through a `ClusterIP` Service. Its evaluation API requires the token from `metricGate.auth.existingSecret`; the chart references that Secret but never creates or renders its contents.
+The pods run as UID/GID 65532 with read-only root filesystems, all Linux capabilities dropped, and the runtime-default seccomp profile. The metric gate does not mount a service-account token and is exposed only through a `ClusterIP` Service. Its evaluation API requires the token from `metricGate.auth.existingSecret`; the chart references that Secret but never creates or renders its contents. Generated AnalysisTemplates use `operator.analysis.auth.existingSecret` and `tokenKey` in the ReleasePlan namespace. ReleaseGuard never reads or copies Secrets, so platform automation must provision the matching credential in every target namespace.
 
-The operator's `/healthz` reports process liveness and `/readyz` becomes healthy only after Java Operator SDK startup. The metric gate uses Spring Boot liveness and readiness probes. Set `metricGate.prometheusBaseUrl` to the cluster-local Prometheus URL before evaluating a release.
+The operator's `/healthz` reports process liveness and `/readyz` becomes healthy only after Java Operator SDK startup. The metric gate uses Spring Boot liveness and readiness probes. Set `metricGate.prometheusBaseUrl` to the cluster-local Prometheus URL before evaluating a release. `operator.analysis.evaluationUrl` defaults to the chart's cluster-local metric-gate Service and can point to another HTTP(S) endpoint.
 
 Only one operator replica is accepted. The operator Deployment uses `Recreate` so an upgrade cannot briefly run competing reconcilers before leader election is implemented.

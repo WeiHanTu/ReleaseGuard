@@ -44,7 +44,7 @@ final class TestFixtures {
             new IntOrString("http"),
             new ReleasePlanSpec.Ingress("nginx", "checkout.releaseguard.local", "/")),
         new ReleasePlanSpec.Rollout(
-            steps, List.of(new ReleasePlanSpec.Gate("http-errors", 0.01, 0.005, 3, 2))),
+            steps, List.of(new ReleasePlanSpec.Gate("http-errors", 0.01, 0.005, 3, 2, 3))),
         new ReleasePlanSpec.FailurePolicy(
             ReleasePlanSpec.MetricUnavailable.Pause,
             ReleasePlanSpec.GateFailed.Rollback,

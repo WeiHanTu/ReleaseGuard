@@ -92,11 +92,11 @@ class ReleasePlanValidatorTest {
   void rejectsUnknownPolicyAndThresholdOutsideAdministratorBounds() {
     ReleasePlanSpec unknown =
         withGates(
-            TestFixtures.plan(), List.of(new ReleasePlanSpec.Gate("missing", 0.01, null, 1, 1)));
+            TestFixtures.plan(), List.of(new ReleasePlanSpec.Gate("missing", 0.01, null, 1, 1, 1)));
     ReleasePlanSpec outOfBounds =
         withGates(
             TestFixtures.plan(),
-            List.of(new ReleasePlanSpec.Gate("http-errors", 0.50, null, 1, 1)));
+            List.of(new ReleasePlanSpec.Gate("http-errors", 0.50, null, 1, 1, 1)));
 
     assertTrue(validator.validate(unknown, releaseContext).hasRequirement("RG-PLAN-007"));
     assertTrue(validator.validate(outOfBounds, releaseContext).hasRequirement("RG-POL-006"));
@@ -107,7 +107,7 @@ class ReleasePlanValidatorTest {
     ReleasePlanSpec invalid =
         withGates(
             TestFixtures.plan(),
-            List.of(new ReleasePlanSpec.Gate("http-errors", null, 0.01, 1, 1)));
+            List.of(new ReleasePlanSpec.Gate("http-errors", null, 0.01, 1, 1, 1)));
 
     assertTrue(validator.validate(invalid, releaseContext).hasRequirement("RG-PLAN-013"));
   }

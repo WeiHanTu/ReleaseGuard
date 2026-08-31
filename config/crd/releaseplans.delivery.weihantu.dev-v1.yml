@@ -97,10 +97,13 @@ spec:
                   gates:
                     items:
                       properties:
-                        consecutiveFailures:
+                        consecutiveSuccesses:
                           minimum: 1.0
                           type: "integer"
-                        consecutiveSuccesses:
+                        failureLimit:
+                          minimum: 1.0
+                          type: "integer"
+                        inconclusiveLimit:
                           minimum: 1.0
                           type: "integer"
                         maxCanaryValue:
@@ -111,6 +114,9 @@ spec:
                           minLength: 1
                           type: "string"
                       required:
+                      - "consecutiveSuccesses"
+                      - "failureLimit"
+                      - "inconclusiveLimit"
                       - "policyRef"
                       type: "object"
                     minItems: 1

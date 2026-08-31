@@ -116,12 +116,13 @@ class ReleaseGuardCliTest {
     assertEquals(ExitCode.SUCCESS, first.exitCode());
     assertEquals(first.standardOutput(), second.standardOutput());
     assertEquals(
-        4L,
+        5L,
         java.util.regex.Pattern.compile("(?m)^kind: ")
             .matcher(first.standardOutput())
             .results()
             .count());
     assertTrue(first.standardOutput().contains("kind: \"Rollout\""));
+    assertTrue(first.standardOutput().contains("kind: \"AnalysisTemplate\""));
     assertTrue(first.standardOutput().contains("delivery.weihantu.dev/plan-generation: \"7\""));
     assertTrue(first.standardOutput().contains("uid: \"11111111-1111-1111-1111-111111111111\""));
     assertFalse(first.standardOutput().contains("---\n---"));
@@ -138,7 +139,7 @@ class ReleaseGuardCliTest {
     assertEquals(ExitCode.SUCCESS, first.exitCode());
     assertEquals(first.standardOutput(), second.standardOutput());
     List<?> resources = KUBERNETES.unmarshal(first.standardOutput(), List.class);
-    assertEquals(4, resources.size());
+    assertEquals(5, resources.size());
     assertTrue(first.standardOutput().contains("offline-"));
     assertTrue(first.standardError().contains("deterministic offline UID"));
   }

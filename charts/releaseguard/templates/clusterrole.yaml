@@ -32,3 +32,6 @@ rules:
   - apiGroups: ["argoproj.io"]
     resources: ["rollouts/status"]
     verbs: ["get", "patch", "update"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["analysistemplates"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]

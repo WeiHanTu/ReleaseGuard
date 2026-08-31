@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
 import io.fabric8.kubernetes.api.model.HasMetadata;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -18,15 +19,15 @@ class ReleaseResourceRendererTest {
   void rendersDeterministicOwnedServicesIngressAndRollout() {
     var plan = OperatorTestFixtures.plan(7);
 
-    List<HasMetadata> first = renderer.render(plan);
-    List<HasMetadata> second = renderer.render(plan);
+    List<HasMetadata> first = renderer.render(plan, OperatorTestFixtures.policies());
+    List<HasMetadata> second = renderer.render(plan, OperatorTestFixtures.policies());
 
     assertEquals(first, second);
     assertEquals(
-        List.of("Service", "Service", "Ingress", "Rollout"),
+        List.of("Service", "Service", "Ingress", "AnalysisTemplate", "Rollout"),
         first.stream().map(HasMetadata::getKind).toList());
     assertEquals(
-        List.of("checkout-stable", "checkout-canary", "checkout", "checkout"),
+        List.of("checkout-stable", "checkout-canary", "checkout", "checkout-gates-g7", "checkout"),
         first.stream().map(resource -> resource.getMetadata().getName()).toList());
 
     for (HasMetadata resource : first) {
@@ -49,7 +50,9 @@ class ReleaseResourceRendererTest {
     GenericKubernetesResource stableService =
         assertInstanceOf(
             GenericKubernetesResource.class,
-            renderer.render(OperatorTestFixtures.plan(1)).getFirst());
+            renderer
+                .render(OperatorTestFixtures.plan(1), OperatorTestFixtures.policies())
+                .getFirst());
     Map<?, ?> serviceSpec = map(stableService.getAdditionalProperties().get("spec"));
     Map<?, ?> serviceSelector = map(serviceSpec.get("selector"));
     assertFalse(serviceSelector.containsKey("app.kubernetes.io/name"));
@@ -60,7 +63,9 @@ class ReleaseResourceRendererTest {
     GenericKubernetesResource rollout =
         assertInstanceOf(
             GenericKubernetesResource.class,
-            renderer.render(OperatorTestFixtures.plan(1)).getLast());
+            renderer
+                .render(OperatorTestFixtures.plan(1), OperatorTestFixtures.policies())
+                .getLast());
     Map<?, ?> rolloutSpec = map(rollout.getAdditionalProperties().get("spec"));
     Map<?, ?> rolloutSelector = map(map(rolloutSpec.get("selector")).get("matchLabels"));
     assertFalse(rolloutSelector.containsKey(ReleaseResourceRenderer.PLAN_GENERATION_LABEL));
@@ -79,8 +84,10 @@ class ReleaseResourceRendererTest {
 
   @Test
   void releaseGenerationChangesPodMetadataButNotLongLivedSelectors() {
-    List<HasMetadata> generationOne = renderer.render(OperatorTestFixtures.plan(1));
-    List<HasMetadata> generationTwo = renderer.render(OperatorTestFixtures.plan(2));
+    List<HasMetadata> generationOne =
+        renderer.render(OperatorTestFixtures.plan(1), OperatorTestFixtures.policies());
+    List<HasMetadata> generationTwo =
+        renderer.render(OperatorTestFixtures.plan(2), OperatorTestFixtures.policies());
 
     GenericKubernetesResource serviceOneResource =
         assertInstanceOf(GenericKubernetesResource.class, generationOne.getFirst());
@@ -105,11 +112,97 @@ class ReleaseResourceRendererTest {
     assertEquals("2", podLabelsTwo.get(ReleaseResourceRenderer.PLAN_GENERATION_LABEL));
   }
 
+  @Test
+  void snapshotsPolicyAndReferencesAuthenticationSecretWithoutRenderingTokenMaterial() {
+    GenericKubernetesResource template =
+        assertInstanceOf(
+            GenericKubernetesResource.class,
+            renderer.render(OperatorTestFixtures.plan(7), OperatorTestFixtures.policies()).get(3));
+
+    Map<?, ?> spec = map(template.getAdditionalProperties().get("spec"));
+    List<?> args = list(spec.get("args"));
+    Map<?, ?> tokenArg = map(args.getFirst());
+    Map<?, ?> valueFrom = map(tokenArg.get("valueFrom"));
+    Map<?, ?> secretKeyRef = map(valueFrom.get("secretKeyRef"));
+    assertEquals("releaseguard-metric-gate-auth", secretKeyRef.get("name"));
+    assertEquals("token", secretKeyRef.get("key"));
+    assertFalse(tokenArg.containsKey("value"));
+
+    Map<?, ?> metric = map(list(spec.get("metrics")).getFirst());
+    assertEquals(3, metric.get("failureLimit"));
+    assertEquals(2, metric.get("consecutiveSuccessLimit"));
+    assertEquals(3, metric.get("inconclusiveLimit"));
+    Map<?, ?> web = map(map(metric.get("provider")).get("web"));
+    Map<?, ?> body = map(web.get("jsonBody"));
+    Map<?, ?> policy = map(body.get("policy"));
+    assertEquals("817263", policy.get("resourceVersion"));
+    Map<?, ?> policySpec = map(policy.get("spec"));
+    assertEquals(
+        "sum(rate(requests{revision=\"{{ args.policy-placeholder-revision }}\"}"
+            + "[{{ args.policy-placeholder-window }}]))",
+        policySpec.get("valueQueryTemplate"));
+    assertTrue(
+        web.toString().contains("Bearer {{ args.authorization-token }}"),
+        "the template must defer Secret resolution to Argo");
+    assertFalse(body.containsKey("evaluationTime"));
+  }
+
+  @Test
+  void preservesGatePromqlPlaceholdersAcrossOnePassArgoArgumentResolution() {
+    GenericKubernetesResource template =
+        assertInstanceOf(
+            GenericKubernetesResource.class,
+            renderer.render(OperatorTestFixtures.plan(7), OperatorTestFixtures.policies()).get(3));
+    Map<?, ?> spec = map(template.getAdditionalProperties().get("spec"));
+    Map<String, String> arguments = new LinkedHashMap<>();
+    arguments.put("authorization-token", "test-token");
+    arguments.put("step", "0");
+    arguments.put("mode", "Canary");
+    arguments.put("stable-revision", "stable-hash");
+    arguments.put("canary-revision", "canary-hash");
+    for (Object argumentValue : list(spec.get("args"))) {
+      Map<?, ?> argument = map(argumentValue);
+      if (argument.get("value") instanceof String value) {
+        arguments.put(argument.get("name").toString(), value);
+      }
+    }
+
+    Map<?, ?> resolvedMetric = map(resolve(list(spec.get("metrics")).getFirst(), arguments));
+    assertFalse(resolvedMetric.toString().contains("{{ args."));
+    Map<?, ?> web = map(map(resolvedMetric.get("provider")).get("web"));
+    Map<?, ?> policy = map(map(web.get("jsonBody")).get("policy"));
+    Map<?, ?> policySpec = map(policy.get("spec"));
+    assertEquals(
+        OperatorTestFixtures.policy().valueQueryTemplate(), policySpec.get("valueQueryTemplate"));
+    assertEquals(
+        OperatorTestFixtures.policy().sampleCountQueryTemplate(),
+        policySpec.get("sampleCountQueryTemplate"));
+  }
+
   private static Map<?, ?> map(Object value) {
     return assertInstanceOf(Map.class, value);
   }
 
   private static List<?> list(Object value) {
     return assertInstanceOf(List.class, value);
+  }
+
+  private static Object resolve(Object value, Map<String, String> arguments) {
+    if (value instanceof String string) {
+      String resolved = string;
+      for (Map.Entry<String, String> argument : arguments.entrySet()) {
+        resolved = resolved.replace("{{ args." + argument.getKey() + " }}", argument.getValue());
+      }
+      return resolved;
+    }
+    if (value instanceof Map<?, ?> map) {
+      Map<String, Object> resolved = new LinkedHashMap<>();
+      map.forEach((key, child) -> resolved.put(key.toString(), resolve(child, arguments)));
+      return Map.copyOf(resolved);
+    }
+    if (value instanceof List<?> list) {
+      return list.stream().map(child -> resolve(child, arguments)).toList();
+    }
+    return value;
   }
 }

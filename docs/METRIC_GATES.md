@@ -2,11 +2,11 @@
 
 ## Current boundary
 
-The metric-gate service implements the stateless portions of `RG-GATE-001` through `RG-GATE-011`. It does not yet implement the AnalysisRun limits and pause behavior required to complete `RG-GATE-010`, shift traffic, count consecutive results, or mutate a `ReleasePlan`. Argo Rollouts will own those responsibilities after AnalysisRun integration. The service is packaged and authenticated for cluster-internal deployment, but it is not yet called by generated AnalysisRuns.
+The metric-gate service implements the stateless portions of `RG-GATE-001` through `RG-GATE-011`. The operator now generates authenticated, policy-versioned AnalysisTemplates, but Rollouts do not reference them yet. Argo Rollouts will own traffic changes, total failure limits, consecutive-success limits, inconclusive limits, and AnalysisRun lifecycle after that link is enabled.
 
 ```mermaid
 flowchart LR
-    Analysis["Argo AnalysisRun (planned)"] --> API["POST /internal/v1/evaluations"]
+    Analysis["Argo AnalysisRun"] --> API["POST /internal/v1/evaluations"]
     API --> Validate["Request and policy validation"]
     Validate --> Render["Escaped PromQL rendering"]
     Render --> Query["Bounded Prometheus queries"]
@@ -16,7 +16,7 @@ flowchart LR
 
 ## Evaluation contract
 
-A request snapshots the release ID, step, mode, policy specification and resource version, stable/canary revisions, thresholds, and evaluation time. `Bootstrap` forbids a stable revision and requires an absolute threshold. `Canary` requires different stable and canary revisions.
+A request snapshots the release ID, step, mode, policy specification and resource version, stable/canary revisions, and thresholds. `evaluationTime` is optional: the gate assigns UTC server time before validation and evidence hashing when Argo omits it. `Bootstrap` forbids a stable revision and requires an absolute threshold. `Canary` requires different stable and canary revisions.
 
 Each revision uses separate value and sample-count PromQL queries. Substitutions for revision, namespace, and release name must occur inside string literals and are escaped; the validated duration window must remain outside quotes. The service applies both the policy timeout and the smaller remaining overall request deadline.
 
@@ -27,6 +27,8 @@ Each revision uses separate value and sample-count PromQL queries. Substitutions
 | Evidence is unsafe or unavailable | `Inconclusive` | `EmptyVector`, `StaleObservation`, `ProviderTimeout` |
 
 `Inconclusive` is never success and does not independently request rollback. AnalysisRun inconclusive limits will pause progression when monitoring is unavailable.
+
+MetricPolicy query templates use ReleaseGuard placeholders such as `{{revision}}` and `{{window}}`, while Argo uses `{{ args.* }}`. The renderer wraps the policy placeholders in default Argo arguments so Argo's single substitution pass restores the original PromQL template instead of rejecting it as an unresolved analysis argument.
 
 ## Run and verify
 
@@ -41,7 +43,7 @@ curl --fail http://127.0.0.1:8080/actuator/health
 
 The default overall deadline is 10 seconds and can be changed with `GATE_REQUEST_TIMEOUT` up to one minute. `POST /internal/v1/evaluations` requires `Authorization: Bearer <token>`; missing and invalid credentials receive the same `401` response. Tokens must contain at least 32 UTF-8 bytes and are redacted from configuration rendering. Health and metrics remain unauthenticated for Kubernetes probes and cluster-local Prometheus scraping.
 
-The Helm chart deploys the service behind a `ClusterIP`, disables service-account-token mounting, and reads the bearer token through a reference to `metricGate.auth.existingSecret`. It never creates the Secret or embeds the token in a Deployment. `/actuator/prometheus` exposes query latency/outcomes, gate decisions/reasons, JVM, process, and HTTP server metrics without release IDs or revisions as labels.
+The Helm chart deploys the service behind a `ClusterIP`, disables service-account-token mounting, and reads the bearer token through a reference to `metricGate.auth.existingSecret`. It never creates the Secret or embeds the token in a Deployment. Generated AnalysisTemplates independently reference `operator.analysis.auth.existingSecret`; an external Secret controller or platform administrator must provision that Secret and key in every ReleasePlan namespace. ReleaseGuard deliberately has no Secret-read permission. `/actuator/prometheus` exposes query latency/outcomes, gate decisions/reasons, JVM, process, and HTTP server metrics without release IDs or revisions as labels.
 
 The current Kind profile does not terminate TLS or install a NetworkPolicy, so the bearer token travels over the cluster network. That is acceptable only for the documented disposable local environment. A cloud deployment must add mesh or service TLS and namespace-scoped network policy before this boundary can be called production-safe.
 

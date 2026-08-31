@@ -59,6 +59,12 @@ spec:
               value: {{ .Values.operator.cleanup.deadline | quote }}
             - name: RELEASEGUARD_CLEANUP_REQUEUE_INTERVAL
               value: {{ .Values.operator.cleanup.requeueInterval | quote }}
+            - name: RELEASEGUARD_ANALYSIS_GATE_URL
+              value: {{ default (printf "http://%s.%s.svc.cluster.local:%v/internal/v1/evaluations" (include "releaseguard.metricGateFullname" .) .Release.Namespace .Values.metricGate.service.port) .Values.operator.analysis.evaluationUrl | quote }}
+            - name: RELEASEGUARD_ANALYSIS_AUTH_SECRET_NAME
+              value: {{ .Values.operator.analysis.auth.existingSecret | quote }}
+            - name: RELEASEGUARD_ANALYSIS_AUTH_SECRET_KEY
+              value: {{ .Values.operator.analysis.auth.tokenKey | quote }}
             - name: JAVA_TOOL_OPTIONS
               value: -Djava.io.tmpdir=/tmp -XX:MaxRAMPercentage=75.0
           ports:

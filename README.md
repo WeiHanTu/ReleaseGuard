@@ -2,7 +2,7 @@
 
 ReleaseGuard is an implementation-in-progress GitOps progressive-delivery control plane for Kubernetes. Its target workflow lets developers describe a rollout declaratively, reconcile that desired state through a Java operator, evaluate canaries against Prometheus metrics, and retain an auditable deployment-event history in Kafka.
 
-> **Status:** Weeks 1-3 and the deployable Week 4 metric-gate service are implemented. AnalysisRun integration, automated metric-driven progression, external audit services, and production operations are not implemented yet. No production-readiness claim is made.
+> **Status:** Weeks 1-3, the deployable Week 4 metric-gate service, and generation-scoped Argo AnalysisTemplate rendering are implemented. Rollout-linked AnalysisRuns, automated metric-driven progression, external audit services, and production operations are not implemented yet. No production-readiness claim is made.
 
 ## Implemented
 
@@ -15,18 +15,20 @@ ReleaseGuard is an implementation-in-progress GitOps progressive-delivery contro
 - Purpose-built fake-Prometheus integration tests, an administrator-bounded p95-latency policy, Actuator health probes, Prometheus-format service metrics, bearer-token authentication, and graceful shutdown.
 - Reproducible structural CRDs with status subresources and printer columns.
 - A Java Operator SDK reconciler that records generation-scoped validation before applying child resources and refuses to publish progress status when an apply fails.
-- Deterministic server-side-apply rendering for stable/canary Services, ingress-nginx Ingress, and Argo Rollout resources with owner references and generation-stable workload selectors.
+- Deterministic server-side-apply rendering for stable/canary Services, ingress-nginx Ingress, generation-scoped Argo AnalysisTemplates, and Argo Rollouts with owner references and generation-stable workload selectors.
+- Authenticated AnalysisTemplates that snapshot accepted MetricPolicy specifications and resource versions, map gate limits to Argo v1.9.1 semantics, resolve bearer tokens from same-namespace Secrets, and omit caller timestamps so the gate assigns evaluation time.
 - Java Operator SDK informer sources for managed Rollout, Service, and Ingress changes, with generation-current projection of Argo phase, logical step, stable hash, and canary hash into `ReleasePlan` status.
-- Resource-versioned primary status updates with full-reconciliation conflict recovery; a kube-apiserver integration test injects a real `409 Conflict`, verifies a fresh resource version, preserves the concurrent phase and revisions, and converges to the same four child resources.
+- Resource-versioned primary status updates with full-reconciliation conflict recovery; a kube-apiserver integration test injects a real `409 Conflict`, verifies a fresh resource version, preserves the concurrent phase and revisions, and converges to the same five child resources.
 - An explicit field-ownership handoff: ReleaseGuard initializes Service identity selectors, then omits the selector after Argo installs its pod-template hash while continuing to verify traffic state.
-- Fail-closed indefinite Argo pauses until metric-gate integration exists, plus a lightweight Kubernetes API-server test proving repeated apply does not duplicate resources.
+- Fail-closed indefinite Argo pauses until Rollout-linked analysis exists, plus a lightweight Kubernetes API-server test proving repeated apply does not duplicate resources.
 - A bounded cleanup finalizer that requests Argo abort, verifies controller acknowledgment, stable ready endpoints, and zero canary ingress weight, then either deletes every child or conflict-resiliently retains a controller-independent stable ReplicaSet, Service, and Ingress.
 - Eight-attempt exponential retry for reconciliation and configurable cleanup timing through `RELEASEGUARD_CLEANUP_DEADLINE` (default `60s`) and `RELEASEGUARD_CLEANUP_REQUEUE_INTERVAL` (default `1s`).
 - A digest-pinned multi-stage operator image with an Eclipse Temurin 21 builder and Distroless Java 21 non-root runtime; automated checks enforce UID/GID 65532, a shell-free runtime, no source/build tree, and no more than 50 MiB above the architecture-specific runtime base.
 - A separately verified metric-gate image with the same pinned, non-root Distroless boundary and a Helm-managed `ClusterIP` Deployment that reads its token from an existing Kubernetes Secret without rendering credential material.
 - Separate `/healthz` and `/readyz` endpoints: liveness starts with the process, while readiness is withheld until Java Operator SDK startup completes.
 - A Helm 4 chart with all four generated CRDs, explicit cluster-wide least-privilege RBAC, immutable-digest rendering, Recreate upgrades, resource limits, and Kubernetes Restricted-profile container settings.
-- A clean Kind installation test that loads both verified images, installs the chart with an ephemeral Secret, observes operator and metric-gate probes, verifies the gate's authentication boundary, denies the operator access to Secrets and Namespace deletion, and reconciles a `ReleasePlan` into an Argo Rollout.
+- A clean Kind installation test that loads both verified images, installs the chart with ephemeral Secrets, observes operator and metric-gate probes, verifies the gate's authentication boundary, denies the operator access to Secrets and Namespace deletion, reconciles a `ReleasePlan` into an Argo Rollout and AnalysisTemplate, and executes the template as a real AnalysisRun.
+- One local arm64 run against Kubernetes v1.35.0 and Argo Rollouts v1.9.1 resolved the token from a same-namespace Secret, preserved the snapshotted policy resource version, and classified missing Prometheus evidence as `Inconclusive`; this is integration evidence, not a production SLO.
 - A checksum-pinned Argo CD v3.5.2 installer, automated-sync Application, and committed `environments/local` desired-state path with pruning, retry, and self-healing enabled.
 - A self-contained Kind GitOps test that serves a disposable non-root Git remote, observes a second commit synchronize without an imperative deployment command, and verifies Argo CD restores unauthorized live drift. One local arm64 run observed 4-second Git synchronization and 3-second drift recovery; these are test observations, not production SLOs.
 - A checksum-pinned Kind test that exercises multi-generation status observation and both deletion policies against Argo Rollouts v1.9.1 and Kubernetes v1.35.0: it observes a real 5% pause as logical step 0, proves `Delete` holds its finalizer through an Argo outage, and proves `OrphanStable` remains ready without recreating canary resources after both controllers restart.

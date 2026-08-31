@@ -30,7 +30,8 @@ public final class ReleasePlanPlanner {
   public ReleasePlanPlanner() {
     this(
         new ReleasePlanValidator(),
-        new ReleaseResourceRenderer(),
+        new ReleaseResourceRenderer(
+            MetricGateAnalysisConfiguration.fromEnvironment(System.getenv())),
         new ReleasePhaseMachine(),
         Clock.systemUTC());
   }
@@ -46,13 +47,14 @@ public final class ReleasePlanPlanner {
     this.clock = Objects.requireNonNull(clock, "clock");
   }
 
-  public ReconciliationPlan plan(ReleasePlan plan, Map<String, MetricPolicySpec> acceptedPolicies) {
+  public ReconciliationPlan plan(
+      ReleasePlan plan, Map<String, MetricPolicySnapshot> acceptedPolicies) {
     return plan(plan, acceptedPolicies, RolloutObservation.missing());
   }
 
   ReconciliationPlan plan(
       ReleasePlan plan,
-      Map<String, MetricPolicySpec> acceptedPolicies,
+      Map<String, MetricPolicySnapshot> acceptedPolicies,
       RolloutObservation rolloutObservation) {
     ReleaseResourceRenderer.Identity identity = ReleaseResourceRenderer.Identity.from(plan);
     ReleasePlanStatus current = plan.getStatus();
@@ -84,7 +86,7 @@ public final class ReleasePlanPlanner {
         validator.validate(
             plan.getSpec(),
             ReleasePlanValidationContext.releaseEnvironment(
-                identity.namespace(), acceptedPolicies));
+                identity.namespace(), policySpecs(acceptedPolicies)));
     if (!validation.isValid()) {
       ValidationError first = validation.errors().getFirst();
       return failed(current, identity, first.requirement(), first.path() + ": " + first.message());
@@ -105,15 +107,17 @@ public final class ReleasePlanPlanner {
               revision,
               next == Phase.Bootstrapping ? "BootstrapPrepared" : "RolloutPrepared",
               "Desired rollout resources are prepared and metric-gated progression is pending");
-      return new ReconciliationPlan(status, renderer.render(plan), null);
+      return new ReconciliationPlan(status, renderer.render(plan, acceptedPolicies), null);
     }
 
     if (currentPhase == Phase.Bootstrapping || currentPhase == Phase.Progressing) {
-      return activeRelease(plan, current, identity, currentPhase, rolloutObservation);
+      return activeRelease(
+          plan, current, identity, currentPhase, acceptedPolicies, rolloutObservation);
     }
 
     if (currentPhase == Phase.Paused) {
-      return activeRelease(plan, current, identity, currentPhase, rolloutObservation);
+      return activeRelease(
+          plan, current, identity, currentPhase, acceptedPolicies, rolloutObservation);
     }
 
     return new ReconciliationPlan(current, List.of(), null);
@@ -124,6 +128,7 @@ public final class ReleasePlanPlanner {
       ReleasePlanStatus current,
       ReleaseResourceRenderer.Identity identity,
       Phase currentPhase,
+      Map<String, MetricPolicySnapshot> acceptedPolicies,
       RolloutObservation observation) {
     Phase phase = projectedPhase(currentPhase, observation);
     phaseMachine.requireTransition(currentPhase, phase);
@@ -151,7 +156,14 @@ public final class ReleasePlanPlanner {
     ReleasePlanStatus status =
         status(
             current, identity, phase, currentStep, stableRevision, canaryRevision, reason, message);
-    return new ReconciliationPlan(status, renderer.render(plan), null);
+    return new ReconciliationPlan(status, renderer.render(plan, acceptedPolicies), null);
+  }
+
+  private static Map<String, MetricPolicySpec> policySpecs(
+      Map<String, MetricPolicySnapshot> snapshots) {
+    Map<String, MetricPolicySpec> specs = new HashMap<>();
+    snapshots.forEach((name, snapshot) -> specs.put(name, snapshot.spec()));
+    return Map.copyOf(specs);
   }
 
   private static Phase projectedPhase(Phase currentPhase, RolloutObservation observation) {

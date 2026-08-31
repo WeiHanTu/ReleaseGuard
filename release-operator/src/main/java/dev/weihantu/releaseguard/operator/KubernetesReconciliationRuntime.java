@@ -18,6 +18,7 @@ import io.fabric8.kubernetes.client.dsl.Resource;
 import io.fabric8.kubernetes.client.dsl.base.PatchContext;
 import io.fabric8.kubernetes.client.dsl.base.PatchType;
 import io.fabric8.kubernetes.client.dsl.base.ResourceDefinitionContext;
+import io.fabric8.kubernetes.client.utils.KubernetesSerialization;
 import io.javaoperatorsdk.operator.api.reconciler.Context;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -35,9 +36,10 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
       "delivery.weihantu.dev/orphan-stable-revision";
   private static final int CLEANUP_EDIT_ATTEMPTS = 5;
   private static final long CLEANUP_EDIT_INITIAL_BACKOFF_NANOS = 25_000_000L;
+  private static final KubernetesSerialization KUBERNETES = new KubernetesSerialization();
 
   @Override
-  public Map<String, MetricPolicySpec> acceptedPolicies(
+  public Map<String, MetricPolicySnapshot> acceptedPolicies(
       ReleasePlan plan, Context<ReleasePlan> context) {
     Set<String> references = new LinkedHashSet<>();
     if (plan.getSpec() != null && plan.getSpec().rollout() != null) {
@@ -51,12 +53,29 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
       }
     }
 
-    Map<String, MetricPolicySpec> accepted = new LinkedHashMap<>();
+    GenericKubernetesResource existingTemplate =
+        analysisTemplate(
+                context,
+                plan.getMetadata().getNamespace(),
+                ReleaseResourceRenderer.analysisTemplateName(
+                    ReleaseResourceRenderer.Identity.from(plan)))
+            .get();
+    Map<String, MetricPolicySnapshot> generationSnapshots =
+        isTrustedGenerationTemplate(plan, existingTemplate)
+            ? policySnapshots(existingTemplate, references)
+            : Map.of();
+    if (generationSnapshots.keySet().equals(references)) {
+      return generationSnapshots;
+    }
+
+    Map<String, MetricPolicySnapshot> accepted = new LinkedHashMap<>();
     for (String reference : references) {
       MetricPolicy policy =
           context.getClient().resources(MetricPolicy.class).withName(reference).get();
       if (isAcceptedCurrentVersion(policy)) {
-        accepted.put(reference, policy.getSpec());
+        accepted.put(
+            reference,
+            new MetricPolicySnapshot(policy.getMetadata().getResourceVersion(), policy.getSpec()));
       }
     }
     return Map.copyOf(accepted);
@@ -154,13 +173,16 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
                             .getAnnotations()
                             .get(CANARY_WEIGHT_ANNOTATION)));
     List<ReplicaSet> planReplicaSets = planReplicaSets(context, namespace, uid);
+    List<GenericKubernetesResource> analysisTemplates =
+        planAnalysisTemplates(context, namespace, uid);
     boolean managedChildrenPresent =
         rollout != null
             || stableService != null
             || canaryService != null
             || stableIngress != null
             || canaryIngress != null
-            || !planReplicaSets.isEmpty();
+            || !planReplicaSets.isEmpty()
+            || !analysisTemplates.isEmpty();
     List<ReplicaSet> retainedStableReplicaSets =
         observedStableReplicaSet == null
             ? List.of()
@@ -183,7 +205,8 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
         retainedDetached
             && planReplicaSets.size() == 1
             && canaryService == null
-            && canaryIngress == null;
+            && canaryIngress == null
+            && analysisTemplates.isEmpty();
 
     return new CleanupObservation(
         rollout != null,
@@ -210,6 +233,8 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
     String name = plan.getMetadata().getName();
     String uid = plan.getMetadata().getUid();
     rollout(context, namespace, name).delete();
+    planAnalysisTemplates(context, namespace, uid)
+        .forEach(template -> context.getClient().resource(template).delete());
     planReplicaSets(context, namespace, uid)
         .forEach(replicaSet -> context.getClient().resource(replicaSet).delete());
     context
@@ -271,6 +296,8 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
         .inNamespace(namespace)
         .withName(canaryIngressName(name))
         .delete();
+    planAnalysisTemplates(context, namespace, uid)
+        .forEach(template -> context.getClient().resource(template).delete());
     rollout(context, namespace, name).withPropagationPolicy(DeletionPropagation.ORPHAN).delete();
     replicaSets.stream()
         .filter(
@@ -313,6 +340,95 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
         .withPlural("rollouts")
         .withNamespaced(true)
         .build();
+  }
+
+  static ResourceDefinitionContext analysisTemplateDefinition() {
+    return new ResourceDefinitionContext.Builder()
+        .withGroup("argoproj.io")
+        .withVersion("v1alpha1")
+        .withKind("AnalysisTemplate")
+        .withPlural("analysistemplates")
+        .withNamespaced(true)
+        .build();
+  }
+
+  static Map<String, MetricPolicySnapshot> policySnapshots(
+      GenericKubernetesResource template, Set<String> references) {
+    if (template == null || references.isEmpty()) {
+      return Map.of();
+    }
+    Map<String, MetricPolicySnapshot> snapshots = new LinkedHashMap<>();
+    Object metricsValue = asMap(template.getAdditionalProperties().get("spec")).get("metrics");
+    if (!(metricsValue instanceof List<?> metrics)) {
+      return Map.of();
+    }
+    try {
+      for (Object metricValue : metrics) {
+        Map<?, ?> metric = asMap(metricValue);
+        Map<?, ?> provider = asMap(metric.get("provider"));
+        Map<?, ?> web = asMap(provider.get("web"));
+        Map<?, ?> body = asMap(web.get("jsonBody"));
+        Map<?, ?> policy = asMap(body.get("policy"));
+        String name = stringValue(policy.get("name"));
+        String resourceVersion = stringValue(policy.get("resourceVersion"));
+        if (name != null && references.contains(name)) {
+          MetricPolicySpec spec =
+              KUBERNETES.convertValue(policy.get("spec"), MetricPolicySpec.class);
+          snapshots.put(
+              name,
+              new MetricPolicySnapshot(
+                  resourceVersion, ReleaseResourceRenderer.policySpecFromArgo(spec)));
+        }
+      }
+    } catch (RuntimeException exception) {
+      return Map.of();
+    }
+    return Map.copyOf(snapshots);
+  }
+
+  static boolean isTrustedGenerationTemplate(ReleasePlan plan, GenericKubernetesResource template) {
+    if (template == null
+        || template.getMetadata() == null
+        || template.getMetadata().getLabels() == null
+        || template.getMetadata().getOwnerReferences() == null) {
+      return false;
+    }
+    ObjectMeta metadata = template.getMetadata();
+    String uid = plan.getMetadata().getUid();
+    String generation = Long.toString(plan.getMetadata().getGeneration());
+    boolean correctIdentity =
+        uid.equals(metadata.getLabels().get(ReleaseResourceRenderer.PLAN_UID_LABEL))
+            && generation.equals(
+                metadata.getLabels().get(ReleaseResourceRenderer.PLAN_GENERATION_LABEL))
+            && metadata.getOwnerReferences().stream()
+                .anyMatch(
+                    owner ->
+                        Boolean.TRUE.equals(owner.getController()) && uid.equals(owner.getUid()));
+    return correctIdentity
+        && metadata.getManagedFields() != null
+        && !metadata.getManagedFields().isEmpty()
+        && metadata.getManagedFields().stream()
+            .allMatch(field -> ReleaseResourceRenderer.FIELD_MANAGER.equals(field.getManager()));
+  }
+
+  private static Resource<GenericKubernetesResource> analysisTemplate(
+      Context<ReleasePlan> context, String namespace, String name) {
+    return context
+        .getClient()
+        .genericKubernetesResources(analysisTemplateDefinition())
+        .inNamespace(namespace)
+        .withName(name);
+  }
+
+  private static List<GenericKubernetesResource> planAnalysisTemplates(
+      Context<ReleasePlan> context, String namespace, String uid) {
+    return context
+        .getClient()
+        .genericKubernetesResources(analysisTemplateDefinition())
+        .inNamespace(namespace)
+        .withLabel(ReleaseResourceRenderer.PLAN_UID_LABEL, uid)
+        .list()
+        .getItems();
   }
 
   private static boolean hasReadyEndpoint(

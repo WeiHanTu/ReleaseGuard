@@ -196,13 +196,15 @@ spec:
       - policyRef: http-error-ratio
         maxCanaryValue: 0.01
         maxDeltaFromStable: 0.005
-        consecutiveFailures: 3
+        failureLimit: 3
         consecutiveSuccesses: 2
+        inconclusiveLimit: 3
       - policyRef: request-p95-ms
         maxCanaryValue: 250
         maxDeltaFromStable: 50
-        consecutiveFailures: 3
+        failureLimit: 3
         consecutiveSuccesses: 2
+        inconclusiveLimit: 3
   failurePolicy:
     metricUnavailable: Pause
     gateFailed: Rollback
@@ -562,6 +564,8 @@ Request fields:
 }
 ```
 
+`evaluationTime` is optional for generated Argo requests. When absent, the gate MUST assign its UTC server time before validation, Prometheus querying, and evidence hashing. Explicit values remain valid for deterministic replay.
+
 Response fields:
 
 ```json
@@ -581,7 +585,7 @@ Response fields:
 
 ### 15.2 Decision algorithm
 
-The gate service SHOULD be stateless. Argo AnalysisRun configuration owns consecutive success and failure counting.
+The gate service SHOULD be stateless. Argo AnalysisRun configuration owns consecutive-success counting, total failed-measurement limits, and inconclusive limits.
 
 For `LowerIsBetter` in canary mode:
 
@@ -614,6 +618,7 @@ In bootstrap mode, `stableRevision` is absent, the baseline predicate is recorde
 - `RG-GATE-009`: Gate responses MUST include machine-readable reason codes.
 - `RG-GATE-010`: Prometheus unavailability MUST pause the rollout after the configured AnalysisRun inconclusive limit; it MUST NOT promote or automatically roll back solely because monitoring disappeared.
 - `RG-GATE-011`: Bootstrap mode MUST evaluate at least one absolute gate and MUST NOT fabricate or reuse a stable baseline.
+- `RG-GATE-012`: `failureLimit` MUST mean total failed measurements, `consecutiveSuccesses` MUST mean consecutive successful measurements, and `inconclusiveLimit` MUST mean total inconclusive measurements, matching the pinned Argo Rollouts API.
 
 ## 16. Event and audit specification
 

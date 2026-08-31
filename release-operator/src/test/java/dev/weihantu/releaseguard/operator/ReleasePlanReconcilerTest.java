@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import dev.weihantu.releaseguard.api.v1alpha1.MetricPolicySpec;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlan;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanStatus.Phase;
 import io.fabric8.kubernetes.api.model.HasMetadata;
@@ -41,7 +40,7 @@ class ReleasePlanReconcilerTest {
     assertTrue(applyControl.isNoUpdate());
     assertFalse(applyControl.getScheduleDelay().isPresent());
     assertEquals(Phase.Bootstrapping, plan.getStatus().phase());
-    assertEquals(4, runtime.applied.size());
+    assertEquals(5, runtime.applied.size());
 
     runtime.rolloutObservation =
         new RolloutObservation(true, true, "Healthy", null, "stable-hash", "stable-hash", 2, 2);
@@ -202,7 +201,7 @@ class ReleasePlanReconcilerTest {
     private int statusWrites;
 
     @Override
-    public Map<String, MetricPolicySpec> acceptedPolicies(
+    public Map<String, MetricPolicySnapshot> acceptedPolicies(
         ReleasePlan plan, Context<ReleasePlan> context) {
       return OperatorTestFixtures.policies();
     }

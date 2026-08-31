@@ -4,7 +4,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import dev.weihantu.releaseguard.api.v1alpha1.MetricPolicySpec;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlan;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanSpec;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanStatus;
@@ -61,6 +60,28 @@ class ReleasePlanStatusConflictIT {
             storage: true
             subresources:
               status: {}
+            schema:
+              openAPIV3Schema:
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+      """;
+  private static final String ANALYSIS_TEMPLATE_CRD =
+      """
+      apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      metadata:
+        name: analysistemplates.argoproj.io
+      spec:
+        group: argoproj.io
+        scope: Namespaced
+        names:
+          plural: analysistemplates
+          singular: analysistemplate
+          kind: AnalysisTemplate
+        versions:
+          - name: v1alpha1
+            served: true
+            storage: true
             schema:
               openAPIV3Schema:
                 type: object
@@ -182,6 +203,10 @@ class ReleasePlanStatusConflictIT {
         .load(new ByteArrayInputStream(ROLLOUT_CRD.getBytes(StandardCharsets.UTF_8)))
         .items()
         .forEach(resource -> client.resource(resource).serverSideApply());
+    client
+        .load(new ByteArrayInputStream(ANALYSIS_TEMPLATE_CRD.getBytes(StandardCharsets.UTF_8)))
+        .items()
+        .forEach(resource -> client.resource(resource).serverSideApply());
   }
 
   private static ReleasePlan createValidatingPlan() {
@@ -277,7 +302,7 @@ class ReleasePlanStatusConflictIT {
     private final AtomicInteger applyAttempts = new AtomicInteger();
 
     @Override
-    public Map<String, MetricPolicySpec> acceptedPolicies(
+    public Map<String, MetricPolicySnapshot> acceptedPolicies(
         ReleasePlan plan, Context<ReleasePlan> context) {
       ReleasePlanStatus status = plan.getStatus();
       inputs.add(

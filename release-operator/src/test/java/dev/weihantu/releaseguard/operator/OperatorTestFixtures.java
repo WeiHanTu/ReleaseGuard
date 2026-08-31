@@ -51,7 +51,7 @@ final class OperatorTestFixtures {
                 new ReleasePlanSpec.Step(5, "2m"),
                 new ReleasePlanSpec.Step(25, "5m"),
                 new ReleasePlanSpec.Step(100, null)),
-            List.of(new ReleasePlanSpec.Gate("http-errors", 0.01, 0.005, 3, 2))),
+            List.of(new ReleasePlanSpec.Gate("http-errors", 0.01, 0.005, 3, 2, 3))),
         new ReleasePlanSpec.FailurePolicy(
             ReleasePlanSpec.MetricUnavailable.Pause,
             ReleasePlanSpec.GateFailed.Rollback,
@@ -60,8 +60,8 @@ final class OperatorTestFixtures {
         deletionPolicy);
   }
 
-  static Map<String, MetricPolicySpec> policies() {
-    return Map.of("http-errors", policy());
+  static Map<String, MetricPolicySnapshot> policies() {
+    return Map.of("http-errors", new MetricPolicySnapshot("817263", policy()));
   }
 
   static MetricPolicySpec policy() {

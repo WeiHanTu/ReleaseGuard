@@ -46,9 +46,26 @@
     "operator": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["healthPort", "cleanup"],
+      "required": ["healthPort", "analysis", "cleanup"],
       "properties": {
         "healthPort": {"type": "integer", "minimum": 1024, "maximum": 65535},
+        "analysis": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["evaluationUrl", "auth"],
+          "properties": {
+            "evaluationUrl": {"type": "string", "pattern": "^$|^https?://[^ ]+$"},
+            "auth": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["existingSecret", "tokenKey"],
+              "properties": {
+                "existingSecret": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+                "tokenKey": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$"}
+              }
+            }
+          }
+        },
         "cleanup": {
           "type": "object",
           "additionalProperties": false,

@@ -53,6 +53,11 @@ grep -Fq 'path: /readyz' "${default_manifest}"
 grep -Fq 'resources: ["releaseplans/status"]' "${default_manifest}"
 grep -Fq 'resources: ["metricpolicies"]' "${default_manifest}"
 grep -Fq 'resources: ["rollouts/status"]' "${default_manifest}"
+grep -Fq 'resources: ["analysistemplates"]' "${default_manifest}"
+grep -Fq 'name: RELEASEGUARD_ANALYSIS_GATE_URL' "${default_manifest}"
+grep -Fq 'value: "http://releaseguard-metric-gate.releaseguard-system.svc.cluster.local:8080/internal/v1/evaluations"' "${default_manifest}"
+grep -Fq 'name: RELEASEGUARD_ANALYSIS_AUTH_SECRET_NAME' "${default_manifest}"
+grep -Fq 'name: RELEASEGUARD_ANALYSIS_AUTH_SECRET_KEY' "${default_manifest}"
 grep -Fq 'image: "releaseguard-operator:dev"' "${default_manifest}"
 grep -Fq 'name: releaseguard-metric-gate' "${default_manifest}"
 grep -Fq 'app.kubernetes.io/component: metric-gate' "${default_manifest}"
@@ -101,6 +106,13 @@ if "${helm_bin}" template releaseguard "${CHART}" \
   --set-string metricGate.requestTimeout=61s \
   >"${temporary_directory}/invalid-gate-timeout.out" 2>&1; then
   echo "Chart accepted a metric-gate timeout above the service maximum" >&2
+  exit 1
+fi
+
+if "${helm_bin}" template releaseguard "${CHART}" \
+  --set-string operator.analysis.evaluationUrl=file:///tmp/gate \
+  >"${temporary_directory}/invalid-analysis-url.out" 2>&1; then
+  echo "Chart accepted a non-HTTP analysis gate URL" >&2
   exit 1
 fi
 

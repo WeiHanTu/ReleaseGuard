@@ -299,11 +299,14 @@ public final class ReleasePlanValidator {
         allowed == null ? null : allowed.stableDelta(),
         path + ".maxDeltaFromStable",
         errors);
-    if (gate.consecutiveFailures() != null && gate.consecutiveFailures() < 1) {
-      add(errors, "RG-PLAN-007", path + ".consecutiveFailures", "value must be positive");
+    if (gate.failureLimit() == null || gate.failureLimit() < 1) {
+      add(errors, "RG-PLAN-007", path + ".failureLimit", "value must be positive");
     }
-    if (gate.consecutiveSuccesses() != null && gate.consecutiveSuccesses() < 1) {
+    if (gate.consecutiveSuccesses() == null || gate.consecutiveSuccesses() < 1) {
       add(errors, "RG-PLAN-007", path + ".consecutiveSuccesses", "value must be positive");
+    }
+    if (gate.inconclusiveLimit() == null || gate.inconclusiveLimit() < 1) {
+      add(errors, "RG-PLAN-007", path + ".inconclusiveLimit", "value must be positive");
     }
   }
 

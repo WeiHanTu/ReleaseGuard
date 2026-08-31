@@ -1,5 +1,7 @@
 package dev.weihantu.releaseguard.operator;
 
+import dev.weihantu.releaseguard.api.v1alpha1.KubernetesDuration;
+import dev.weihantu.releaseguard.api.v1alpha1.MetricPolicySpec;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlan;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanSpec;
 import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
@@ -12,6 +14,7 @@ import io.fabric8.kubernetes.api.model.PodTemplateSpec;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -23,10 +26,31 @@ public final class ReleaseResourceRenderer {
   public static final String PLAN_UID_LABEL = "delivery.weihantu.dev/plan-uid";
   public static final String PLAN_GENERATION_LABEL = "delivery.weihantu.dev/plan-generation";
   public static final String REVISION_LABEL = "delivery.weihantu.dev/revision";
+  private static final String ANALYSIS_API_VERSION = "argoproj.io/v1alpha1";
+  private static final String AUTHORIZATION_TOKEN_ARG = "authorization-token";
+  private static final List<Map.Entry<String, String>> POLICY_TEMPLATE_ARGS =
+      List.of(
+          Map.entry("revision", "policy-placeholder-revision"),
+          Map.entry("namespace", "policy-placeholder-namespace"),
+          Map.entry("releaseName", "policy-placeholder-release-name"),
+          Map.entry("window", "policy-placeholder-window"));
 
-  public List<HasMetadata> render(ReleasePlan plan) {
+  private final MetricGateAnalysisConfiguration analysisConfiguration;
+
+  public ReleaseResourceRenderer() {
+    this(MetricGateAnalysisConfiguration.DEFAULT);
+  }
+
+  public ReleaseResourceRenderer(MetricGateAnalysisConfiguration analysisConfiguration) {
+    this.analysisConfiguration =
+        Objects.requireNonNull(analysisConfiguration, "analysisConfiguration");
+  }
+
+  public List<HasMetadata> render(
+      ReleasePlan plan, Map<String, MetricPolicySnapshot> policySnapshots) {
     Identity identity = Identity.from(plan);
     ReleasePlanSpec spec = Objects.requireNonNull(plan.getSpec(), "plan.spec");
+    Objects.requireNonNull(policySnapshots, "policySnapshots");
     Map<String, String> selectorLabels = selectorLabels(identity);
     String stableService = identity.name() + "-stable";
     String canaryService = identity.name() + "-canary";
@@ -35,7 +59,191 @@ public final class ReleaseResourceRenderer {
         service(identity, stableService, spec, selectorLabels),
         service(identity, canaryService, spec, selectorLabels),
         ingress(identity, spec, stableService),
+        analysisTemplate(identity, spec, policySnapshots),
         rollout(identity, spec, stableService, canaryService, selectorLabels));
+  }
+
+  private GenericKubernetesResource analysisTemplate(
+      Identity identity,
+      ReleasePlanSpec releaseSpec,
+      Map<String, MetricPolicySnapshot> policySnapshots) {
+    List<Map<String, Object>> metrics = new ArrayList<>();
+    List<ReleasePlanSpec.Gate> gates = releaseSpec.rollout().gates();
+    for (int index = 0; index < gates.size(); index++) {
+      ReleasePlanSpec.Gate gate = gates.get(index);
+      MetricPolicySnapshot snapshot = policySnapshots.get(gate.policyRef());
+      if (snapshot == null) {
+        throw new IllegalArgumentException(
+            "accepted policy snapshot is missing for " + gate.policyRef());
+      }
+      metrics.add(analysisMetric(identity, gate, snapshot, index));
+    }
+
+    List<Map<String, Object>> args = new ArrayList<>();
+    args.add(
+        Map.of(
+            "name",
+            AUTHORIZATION_TOKEN_ARG,
+            "valueFrom",
+            Map.of(
+                "secretKeyRef",
+                Map.of(
+                    "name",
+                    analysisConfiguration.authSecretName(),
+                    "key",
+                    analysisConfiguration.authSecretKey()))));
+    args.add(Map.of("name", "step"));
+    args.add(Map.of("name", "mode"));
+    args.add(Map.of("name", "stable-revision"));
+    args.add(Map.of("name", "canary-revision"));
+    POLICY_TEMPLATE_ARGS.forEach(
+        argument ->
+            args.add(
+                Map.of("name", argument.getValue(), "value", "{{" + argument.getKey() + "}}")));
+
+    Map<String, Object> templateSpec = new LinkedHashMap<>();
+    templateSpec.put("args", List.copyOf(args));
+    templateSpec.put("metrics", List.copyOf(metrics));
+    return resource(
+        ANALYSIS_API_VERSION,
+        "AnalysisTemplate",
+        metadata(identity, analysisTemplateName(identity)),
+        templateSpec);
+  }
+
+  private Map<String, Object> analysisMetric(
+      Identity identity, ReleasePlanSpec.Gate gate, MetricPolicySnapshot snapshot, int index) {
+    MetricPolicySpec policy = snapshot.spec();
+    Map<String, Object> web = new LinkedHashMap<>();
+    web.put("url", analysisConfiguration.evaluationUrl().toString());
+    web.put("timeoutSeconds", timeoutSeconds(policy.timeout()));
+    web.put("method", "POST");
+    web.put(
+        "headers",
+        List.of(
+            Map.of(
+                "key",
+                "Authorization",
+                "value",
+                "Bearer {{ args." + AUTHORIZATION_TOKEN_ARG + " }}")));
+    web.put("jsonPath", "{$.decision}");
+    web.put("jsonBody", evaluationBody(identity, gate, snapshot));
+
+    Map<String, Object> metric = new LinkedHashMap<>();
+    metric.put("name", metricName(index, gate.policyRef()));
+    metric.put("interval", policy.interval());
+    metric.put("failureLimit", gate.failureLimit());
+    metric.put("consecutiveSuccessLimit", gate.consecutiveSuccesses());
+    metric.put("inconclusiveLimit", gate.inconclusiveLimit());
+    metric.put("successCondition", "result == \"Pass\"");
+    metric.put("failureCondition", "result == \"Fail\"");
+    metric.put("provider", Map.of("web", web));
+    return Map.copyOf(metric);
+  }
+
+  private static Map<String, Object> evaluationBody(
+      Identity identity, ReleasePlanSpec.Gate gate, MetricPolicySnapshot snapshot) {
+    Map<String, Object> policy = new LinkedHashMap<>();
+    policy.put("name", gate.policyRef());
+    policy.put("resourceVersion", snapshot.resourceVersion());
+    policy.put("spec", policySpec(snapshot.spec()));
+
+    Map<String, Object> thresholds = new LinkedHashMap<>();
+    if (gate.maxCanaryValue() != null) {
+      thresholds.put("maxCanaryValue", gate.maxCanaryValue());
+    }
+    if (gate.maxDeltaFromStable() != null) {
+      thresholds.put("maxDeltaFromStable", gate.maxDeltaFromStable());
+    }
+
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("releaseId", identity.releaseId());
+    body.put("step", "{{ args.step }}");
+    body.put("mode", "{{ args.mode }}");
+    body.put("namespace", identity.namespace());
+    body.put("releaseName", identity.name());
+    body.put("policy", Map.copyOf(policy));
+    body.put("stableRevision", "{{ args.stable-revision }}");
+    body.put("canaryRevision", "{{ args.canary-revision }}");
+    body.put("thresholds", Map.copyOf(thresholds));
+    return Map.copyOf(body);
+  }
+
+  private static Map<String, Object> policySpec(MetricPolicySpec spec) {
+    Map<String, Object> allowedThresholds = new LinkedHashMap<>();
+    allowedThresholds.put("canary", numericRange(spec.allowedThresholds().canary()));
+    if (spec.allowedThresholds().stableDelta() != null) {
+      allowedThresholds.put("stableDelta", numericRange(spec.allowedThresholds().stableDelta()));
+    }
+
+    Map<String, Object> value = new LinkedHashMap<>();
+    value.put("direction", spec.direction().name());
+    value.put("unit", spec.unit());
+    value.put("valueQueryTemplate", policyTemplateForArgo(spec.valueQueryTemplate()));
+    value.put("sampleCountQueryTemplate", policyTemplateForArgo(spec.sampleCountQueryTemplate()));
+    value.put("allowedThresholds", Map.copyOf(allowedThresholds));
+    value.put("minimumSamples", spec.minimumSamples());
+    value.put("window", spec.window());
+    value.put("interval", spec.interval());
+    value.put("timeout", spec.timeout());
+    return Map.copyOf(value);
+  }
+
+  private static Map<String, Object> numericRange(MetricPolicySpec.NumericRange range) {
+    return Map.of("minimum", range.minimum(), "maximum", range.maximum());
+  }
+
+  private static String policyTemplateForArgo(String template) {
+    String escaped = template;
+    for (Map.Entry<String, String> entry : POLICY_TEMPLATE_ARGS) {
+      escaped =
+          escaped.replace("{{" + entry.getKey() + "}}", "{{ args." + entry.getValue() + " }}");
+    }
+    return escaped;
+  }
+
+  static MetricPolicySpec policySpecFromArgo(MetricPolicySpec spec) {
+    return new MetricPolicySpec(
+        spec.direction(),
+        spec.unit(),
+        policyTemplateFromArgo(spec.valueQueryTemplate()),
+        policyTemplateFromArgo(spec.sampleCountQueryTemplate()),
+        spec.allowedThresholds(),
+        spec.minimumSamples(),
+        spec.window(),
+        spec.interval(),
+        spec.timeout());
+  }
+
+  private static String policyTemplateFromArgo(String template) {
+    String restored = template;
+    for (Map.Entry<String, String> entry : POLICY_TEMPLATE_ARGS) {
+      restored =
+          restored.replace("{{ args." + entry.getValue() + " }}", "{{" + entry.getKey() + "}}");
+    }
+    return restored;
+  }
+
+  private static int timeoutSeconds(String value) {
+    long milliseconds =
+        KubernetesDuration.parse(value)
+            .orElseThrow(() -> new IllegalArgumentException("invalid policy timeout: " + value))
+            .toMillis();
+    return Math.toIntExact(Math.max(1, (milliseconds + 999) / 1000));
+  }
+
+  private static String metricName(int index, String policyRef) {
+    String sanitized =
+        policyRef.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9-]", "-").replaceAll("^-+|-+$", "");
+    if (sanitized.isBlank()) {
+      sanitized = "policy";
+    }
+    String prefix = "gate-" + index + "-";
+    return prefix + sanitized.substring(0, Math.min(sanitized.length(), 63 - prefix.length()));
+  }
+
+  static String analysisTemplateName(Identity identity) {
+    return identity.name() + "-gates-g" + identity.generation();
   }
 
   private static GenericKubernetesResource service(
@@ -113,7 +321,7 @@ public final class ReleaseResourceRenderer {
     rolloutSpec.put("strategy", Map.of("canary", canary));
 
     return resource(
-        "argoproj.io/v1alpha1", "Rollout", metadata(identity, identity.name()), rolloutSpec);
+        ANALYSIS_API_VERSION, "Rollout", metadata(identity, identity.name()), rolloutSpec);
   }
 
   private static GenericKubernetesResource resource(
