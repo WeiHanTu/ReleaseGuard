@@ -259,6 +259,15 @@ public final class ReleasePlanValidator {
         || !Integer.valueOf(100).equals(steps.getLast().weight())) {
       add(errors, "RG-PLAN-005", "spec.rollout.steps", "the final traffic weight must be 100");
     }
+    if (steps.stream()
+        .filter(Objects::nonNull)
+        .noneMatch(step -> step.weight() != null && step.weight() < 100)) {
+      add(
+          errors,
+          "RG-ROLL-008",
+          "spec.rollout.steps",
+          "at least one observed canary step below 100 percent is required before promotion");
+    }
 
     List<ReleasePlanSpec.Gate> gates = rollout.gates() == null ? List.of() : rollout.gates();
     if (gates.stream().filter(Objects::nonNull).noneMatch(gate -> gate.maxCanaryValue() != null)) {
@@ -271,6 +280,68 @@ public final class ReleasePlanValidator {
     for (int index = 0; index < gates.size(); index++) {
       validateGate(gates.get(index), index, policies, errors);
     }
+    validateGateBudgets(steps, gates, policies, errors);
+  }
+
+  /**
+   * RG-ROLL-004: a nonterminal step must be long enough for its gates to reach a verdict. The gate
+   * cannot judge a candidate before one full metric window has elapsed, and Argo needs one
+   * measurement interval between the remaining measurements that any terminal outcome requires.
+   */
+  private static void validateGateBudgets(
+      List<ReleasePlanSpec.Step> steps,
+      List<ReleasePlanSpec.Gate> gates,
+      Map<String, MetricPolicySpec> policies,
+      List<ValidationError> errors) {
+    for (int index = 0; index < steps.size() - 1; index++) {
+      final int stepIndex = index;
+      ReleasePlanSpec.Step step = steps.get(index);
+      if (step == null) {
+        continue;
+      }
+      Optional<Duration> duration = KubernetesDuration.parse(step.duration());
+      if (duration.isEmpty()) {
+        continue;
+      }
+      for (ReleasePlanSpec.Gate gate : gates) {
+        if (gate == null) {
+          continue;
+        }
+        gateBudget(gate, policies.get(gate.policyRef()))
+            .filter(budget -> budget.compareTo(duration.get()) > 0)
+            .ifPresent(
+                budget ->
+                    add(
+                        errors,
+                        "RG-ROLL-004",
+                        "spec.rollout.steps[" + stepIndex + "].duration",
+                        "gate "
+                            + gate.policyRef()
+                            + " needs "
+                            + budget.toSeconds()
+                            + "s of observation but the step allows "
+                            + duration.get().toSeconds()
+                            + "s"));
+      }
+    }
+  }
+
+  private static Optional<Duration> gateBudget(ReleasePlanSpec.Gate gate, MetricPolicySpec policy) {
+    if (policy == null
+        || gate.failureLimit() == null
+        || gate.consecutiveSuccesses() == null
+        || gate.inconclusiveLimit() == null) {
+      return Optional.empty();
+    }
+    Optional<Duration> window = KubernetesDuration.parse(policy.window());
+    Optional<Duration> interval = KubernetesDuration.parse(policy.interval());
+    if (window.isEmpty() || interval.isEmpty()) {
+      return Optional.empty();
+    }
+    int measurements =
+        Math.max(
+            gate.failureLimit(), Math.max(gate.consecutiveSuccesses(), gate.inconclusiveLimit()));
+    return Optional.of(window.get().plus(interval.get().multipliedBy(measurements - 1L)));
   }
 
   private static void validateGate(

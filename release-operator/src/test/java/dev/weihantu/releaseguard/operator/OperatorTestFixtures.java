@@ -48,7 +48,7 @@ final class OperatorTestFixtures {
             new ReleasePlanSpec.Ingress("nginx", "checkout.releaseguard.local", "/")),
         new ReleasePlanSpec.Rollout(
             List.of(
-                new ReleasePlanSpec.Step(5, "2m"),
+                new ReleasePlanSpec.Step(5, "5m"),
                 new ReleasePlanSpec.Step(25, "5m"),
                 new ReleasePlanSpec.Step(100, null)),
             List.of(new ReleasePlanSpec.Gate("http-errors", 0.01, 0.005, 3, 2, 3))),

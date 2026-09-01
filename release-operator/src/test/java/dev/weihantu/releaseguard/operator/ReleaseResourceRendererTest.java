@@ -46,7 +46,7 @@ class ReleaseResourceRendererTest {
   }
 
   @Test
-  void usesImmutableSelectorsAndFailClosedPauses() {
+  void usesImmutableSelectorsAndGatesEveryCanaryStep() {
     GenericKubernetesResource stableService =
         assertInstanceOf(
             GenericKubernetesResource.class,
@@ -71,15 +71,54 @@ class ReleaseResourceRendererTest {
     assertFalse(rolloutSelector.containsKey(ReleaseResourceRenderer.PLAN_GENERATION_LABEL));
     Map<?, ?> podLabels = map(map(map(rolloutSpec.get("template")).get("metadata")).get("labels"));
     assertEquals("1", podLabels.get(ReleaseResourceRenderer.PLAN_GENERATION_LABEL));
+    assertEquals(600, rolloutSpec.get("progressDeadlineSeconds"));
     Map<?, ?> strategy = map(rolloutSpec.get("strategy"));
     Map<?, ?> canary = map(strategy.get("canary"));
     List<?> steps = list(canary.get("steps"));
     assertEquals(5, steps.size());
     assertEquals(5, map(steps.get(0)).get("setWeight"));
-    assertTrue(map(map(steps.get(1)).get("pause")).isEmpty());
     assertEquals(25, map(steps.get(2)).get("setWeight"));
-    assertTrue(map(map(steps.get(3)).get("pause")).isEmpty());
     assertEquals(100, map(steps.get(4)).get("setWeight"));
+    assertFalse(steps.stream().anyMatch(step -> map(step).containsKey("pause")));
+
+    Map<?, ?> firstGate = map(map(steps.get(1)).get("analysis"));
+    assertEquals(
+        "checkout-gates-g1", map(list(firstGate.get("templates")).getFirst()).get("templateName"));
+    assertEquals(
+        List.of(
+            Map.of("name", "step", "value", "0"),
+            Map.of("name", "mode", "value", "Canary"),
+            Map.of(
+                "name", "stable-revision", "valueFrom", Map.of("podTemplateHashValue", "Stable")),
+            Map.of(
+                "name", "canary-revision", "valueFrom", Map.of("podTemplateHashValue", "Latest"))),
+        firstGate.get("args"));
+    assertEquals(
+        "1", map(list(map(map(steps.get(3)).get("analysis")).get("args")).getFirst()).get("value"));
+  }
+
+  @Test
+  void terminalPromotionStepFollowsEveryDeclaredGate() {
+    var plan = OperatorTestFixtures.plan(3);
+
+    GenericKubernetesResource rollout =
+        assertInstanceOf(
+            GenericKubernetesResource.class,
+            renderer.render(plan, OperatorTestFixtures.policies()).getLast());
+
+    List<?> steps =
+        list(
+            map(map(map(rollout.getAdditionalProperties().get("spec")).get("strategy"))
+                    .get("canary"))
+                .get("steps"));
+    assertEquals(100, map(steps.getLast()).get("setWeight"));
+    assertFalse(map(steps.getLast()).containsKey("analysis"));
+    assertEquals(2, steps.stream().filter(step -> map(step).containsKey("analysis")).count());
+    assertEquals(steps.size(), ReleaseResourceRenderer.argoStepCount(plan.getSpec()));
+    assertEquals(0, ReleaseResourceRenderer.releaseStep(plan.getSpec(), 1));
+    assertEquals(1, ReleaseResourceRenderer.releaseStep(plan.getSpec(), 3));
+    assertEquals(2, ReleaseResourceRenderer.releaseStep(plan.getSpec(), 4));
+    assertEquals(2, ReleaseResourceRenderer.releaseStep(plan.getSpec(), 9));
   }
 
   @Test
@@ -132,6 +171,12 @@ class ReleaseResourceRendererTest {
     assertEquals(3, metric.get("failureLimit"));
     assertEquals(2, metric.get("consecutiveSuccessLimit"));
     assertEquals(3, metric.get("inconclusiveLimit"));
+    assertEquals(3, metric.get("consecutiveErrorLimit"));
+    assertEquals("20s", metric.get("interval"));
+    assertEquals(
+        OperatorTestFixtures.policy().window(),
+        metric.get("initialDelay"),
+        "the first measurement must observe a full post-shift window");
     Map<?, ?> web = map(map(metric.get("provider")).get("web"));
     Map<?, ?> body = map(web.get("jsonBody"));
     Map<?, ?> policy = map(body.get("policy"));

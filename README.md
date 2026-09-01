@@ -2,7 +2,7 @@
 
 ReleaseGuard is an implementation-in-progress GitOps progressive-delivery control plane for Kubernetes. Its target workflow lets developers describe a rollout declaratively, reconcile that desired state through a Java operator, evaluate canaries against Prometheus metrics, and retain an auditable deployment-event history in Kafka.
 
-> **Status:** Weeks 1-3, the deployable Week 4 metric-gate service, and generation-scoped Argo AnalysisTemplate rendering are implemented. Rollout-linked AnalysisRuns, automated metric-driven progression, external audit services, and production operations are not implemented yet. No production-readiness claim is made.
+> **Status:** Weeks 1-3, the deployable Week 4 metric-gate service, generation-scoped Argo AnalysisTemplate rendering, and gate-driven canary steps are implemented. A live gated rollout against real canary traffic and a running Prometheus server has not been executed, and bootstrap gate handling, rollback deadlines, operator actions, external audit services, and production operations are not implemented yet. No production-readiness claim is made.
 
 ## Implemented
 
@@ -20,7 +20,10 @@ ReleaseGuard is an implementation-in-progress GitOps progressive-delivery contro
 - Java Operator SDK informer sources for managed Rollout, Service, and Ingress changes, with generation-current projection of Argo phase, logical step, stable hash, and canary hash into `ReleasePlan` status.
 - Resource-versioned primary status updates with full-reconciliation conflict recovery; a kube-apiserver integration test injects a real `409 Conflict`, verifies a fresh resource version, preserves the concurrent phase and revisions, and converges to the same five child resources.
 - An explicit field-ownership handoff: ReleaseGuard initializes Service identity selectors, then omits the selector after Argo installs its pod-template hash while continuing to verify traffic state.
-- Fail-closed indefinite Argo pauses until Rollout-linked analysis exists, plus a lightweight Kubernetes API-server test proving repeated apply does not duplicate resources.
+- Gate-driven canary steps: every nonterminal step renders `setWeight` followed by a blocking `analysis` step that names the release generation's AnalysisTemplate and passes the step index, canary mode, and Argo stable/latest pod-template hashes, while weight 100 stays a bare promotion step reachable only through the preceding gates.
+- A checked observation budget: each metric delays its first measurement by one policy window, declares no measurement count so promotion needs an explicit consecutive-success streak, bounds consecutive transport errors, and runs under a progress deadline derived from the longest declared step; plans whose step duration cannot contain `window + (max(failureLimit, consecutiveSuccesses, inconclusiveLimit) - 1) x interval` are rejected as `RG-ROLL-004` errors.
+- Status projection of Argo outcomes into `Succeeded`, `Paused` on an inconclusive-analysis pause condition, and `RollingBack` followed by `RolledBack` only after observed zero canary ingress weight and ready stable endpoints, with the AnalysisRun name and verdict recorded as `status.lastGateDecision` and surfaced through the `GateHealthy` condition.
+- A lightweight Kubernetes API-server test proving repeated apply does not duplicate resources.
 - A bounded cleanup finalizer that requests Argo abort, verifies controller acknowledgment, stable ready endpoints, and zero canary ingress weight, then either deletes every child or conflict-resiliently retains a controller-independent stable ReplicaSet, Service, and Ingress.
 - Eight-attempt exponential retry for reconciliation and configurable cleanup timing through `RELEASEGUARD_CLEANUP_DEADLINE` (default `60s`) and `RELEASEGUARD_CLEANUP_REQUEUE_INTERVAL` (default `1s`).
 - A digest-pinned multi-stage operator image with an Eclipse Temurin 21 builder and Distroless Java 21 non-root runtime; automated checks enforce UID/GID 65532, a shell-free runtime, no source/build tree, and no more than 50 MiB above the architecture-specific runtime base.
@@ -31,7 +34,7 @@ ReleaseGuard is an implementation-in-progress GitOps progressive-delivery contro
 - One local arm64 run against Kubernetes v1.35.0 and Argo Rollouts v1.9.1 resolved the token from a same-namespace Secret, preserved the snapshotted policy resource version, and classified missing Prometheus evidence as `Inconclusive`; this is integration evidence, not a production SLO.
 - A checksum-pinned Argo CD v3.5.2 installer, automated-sync Application, and committed `environments/local` desired-state path with pruning, retry, and self-healing enabled.
 - A self-contained Kind GitOps test that serves a disposable non-root Git remote, observes a second commit synchronize without an imperative deployment command, and verifies Argo CD restores unauthorized live drift. One local arm64 run observed 4-second Git synchronization and 3-second drift recovery; these are test observations, not production SLOs.
-- A checksum-pinned Kind test that exercises multi-generation status observation and both deletion policies against Argo Rollouts v1.9.1 and Kubernetes v1.35.0: it observes a real 5% pause as logical step 0, proves `Delete` holds its finalizer through an Argo outage, and proves `OrphanStable` remains ready without recreating canary resources after both controllers restart.
+- A checksum-pinned Kind test that exercises multi-generation status observation and both deletion policies against Argo Rollouts v1.9.1 and Kubernetes v1.35.0: it observes a real gated canary step holding 5% traffic as logical step 0, proves `Delete` holds its finalizer through an Argo outage, and proves `OrphanStable` remains ready without recreating canary resources after both controllers restart.
 - JUnit and jqwik contract tests, formatting checks, CRD freshness verification, wrapper validation, and dependency review.
 
 ## Build and verify
@@ -56,8 +59,9 @@ Run the live Argo finalizer scenario with Docker and `kubectl` available:
 ./tests/e2e/kind-finalizer.sh
 ```
 
-This test runs the real Argo Rollouts controller but not ingress-nginx, so it verifies control-plane state, ready endpoints, and generated Ingress weights rather than request routing.
-Because AnalysisRun integration is not complete, the test explicitly patches the bootstrap phase to `Succeeded` before creating its second `ReleasePlan` generation; it does not claim automated promotion.
+This test runs the real Argo Rollouts controller but neither ingress-nginx nor Prometheus, so it verifies control-plane state, ready endpoints, and generated Ingress weights rather than request routing or metric-driven progression.
+Because bootstrap gate handling is not implemented, the test explicitly patches the bootstrap phase to `Succeeded` before creating its second `ReleasePlan` generation; it does not claim automated promotion.
+Every release namespace needs the metric-gate token Secret before a canary step runs: Argo resolves that reference when it starts an AnalysisRun, and a missing Secret fails the run closed rather than promoting.
 
 Build and run the offline CLI:
 

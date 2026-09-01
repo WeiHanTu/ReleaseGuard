@@ -2,7 +2,7 @@
 
 ## Current boundary
 
-The metric-gate service implements the stateless portions of `RG-GATE-001` through `RG-GATE-011`. The operator now generates authenticated, policy-versioned AnalysisTemplates, but Rollouts do not reference them yet. Argo Rollouts will own traffic changes, total failure limits, consecutive-success limits, inconclusive limits, and AnalysisRun lifecycle after that link is enabled.
+The metric-gate service implements the stateless portions of `RG-GATE-001` through `RG-GATE-011`. Generated Rollouts now call the generated AnalysisTemplate on every nonterminal canary step, so Argo Rollouts owns traffic changes, total failure limits, consecutive-success limits, inconclusive limits, and AnalysisRun lifecycle. The gate owns one decision at a time and holds no state between measurements.
 
 ```mermaid
 flowchart LR
@@ -26,9 +26,26 @@ Each revision uses separate value and sample-count PromQL queries. Substitutions
 | Complete evidence breaches an absolute or baseline threshold | `Fail` | `AbsoluteThresholdBreached` |
 | Evidence is unsafe or unavailable | `Inconclusive` | `EmptyVector`, `StaleObservation`, `ProviderTimeout` |
 
-`Inconclusive` is never success and does not independently request rollback. AnalysisRun inconclusive limits will pause progression when monitoring is unavailable.
+`Inconclusive` is never success and does not independently request rollback. Reaching the AnalysisRun inconclusive limit pauses progression when monitoring is unavailable.
 
 MetricPolicy query templates use ReleaseGuard placeholders such as `{{revision}}` and `{{window}}`, while Argo uses `{{ args.* }}`. The renderer wraps the policy placeholders in default Argo arguments so Argo's single substitution pass restores the original PromQL template instead of rejecting it as an unresolved analysis argument.
+
+## Rollout linkage
+
+Each nonterminal step renders as `setWeight` followed by an inline `analysis` step that names the generation's template and supplies `step`, `mode=Canary`, and the Argo stable and latest pod-template hashes as revision identities. Application telemetry or Prometheus relabeling must expose that hash under the label the policy query uses. Weight 100 renders as a bare `setWeight`, so terminal promotion is reachable only through every preceding gate.
+
+| Argo AnalysisRun outcome | Rollout effect | `ReleasePlan` phase |
+|---|---|---|
+| `Successful` (consecutive-success limit reached) | Advance to the next step | `Progressing`, then `Succeeded` after the terminal step |
+| `Failed` (total failure limit reached) | Abort and restore stable | `RollingBack`, then `RolledBack` |
+| `Inconclusive` (total inconclusive limit reached) | Pause | `Paused` |
+| `Error` (consecutive transport errors) | Abort and restore stable | `RollingBack`, then `RolledBack` |
+
+`RolledBack` requires observed traffic, not an accepted abort: zero canary ingress weight plus ready stable endpoints (RG-RBK-002). The AnalysisRun name and verdict are recorded in `status.lastGateDecision` and reflected in the `GateHealthy` condition.
+
+Each metric delays its first measurement by one policy window, because a measurement taken immediately after a traffic shift reads samples that predate the candidate. A step duration must therefore be at least `window + (max(failureLimit, consecutiveSuccesses, inconclusiveLimit) - 1) x interval`; shorter combinations are rejected as `RG-ROLL-004` plan errors. Argo's `count` is deliberately not rendered: an exhausted measurement count is assessed `Successful`, and this control plane promotes only on an explicit consecutive-success streak.
+
+Argo resolves the template's token argument from the same-namespace Secret when it starts a run, so a release namespace without that Secret fails the run closed and aborts the candidate instead of promoting it.
 
 ## Run and verify
 

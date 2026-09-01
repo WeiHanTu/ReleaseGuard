@@ -186,7 +186,7 @@ spec:
   rollout:
     steps:
       - weight: 5
-        duration: 2m
+        duration: 5m
       - weight: 25
         duration: 5m
       - weight: 50
@@ -515,11 +515,13 @@ stateDiagram-v2
 - `RG-ROLL-001`: The operator MUST render traffic weights and pauses into Argo Rollouts rather than implementing request routing itself.
 - `RG-ROLL-002`: The reference traffic provider for v1 MUST be ingress-nginx.
 - `RG-ROLL-003`: A step observation duration MUST begin only after the requested traffic weight and minimum canary availability are observed.
-- `RG-ROLL-004`: Gate intervals and success/failure counts MUST fit inside the configured step duration; invalid combinations MUST be rejected.
+- `RG-ROLL-004`: Gate intervals and success/failure counts MUST fit inside the configured step duration; invalid combinations MUST be rejected. A gate requires `window + (max(failureLimit, consecutiveSuccesses, inconclusiveLimit) - 1) x interval`, and a nonterminal step whose duration is shorter than any of its gate budgets MUST be rejected.
 - `RG-ROLL-005`: No release may advance more than one declared step per successful gate sequence.
 - `RG-ROLL-006`: A paused rollout MUST retain stable serving capacity sufficient for immediate restoration.
 - `RG-ROLL-007`: A rollout MUST NOT automatically promote while any required gate is `Fail` or `Inconclusive`.
-- `RG-ROLL-008`: Weights below 100 are observed canary steps. Weight 100 is the terminal promotion step and MUST occur only after all preceding required gates pass.
+- `RG-ROLL-008`: Weights below 100 are observed canary steps, and a plan MUST declare at least one. Weight 100 is the terminal promotion step and MUST occur only after all preceding required gates pass.
+- `RG-ROLL-009`: Every nonterminal step MUST render a blocking analysis that references the release generation's AnalysisTemplate and carries the step index, canary mode, and separate stable and canary revision identities.
+- `RG-ROLL-010`: A gate measurement MUST NOT be taken before one full policy window has elapsed at the requested traffic weight.
 
 ### 14.2 Rollback
 
@@ -619,6 +621,7 @@ In bootstrap mode, `stableRevision` is absent, the baseline predicate is recorde
 - `RG-GATE-010`: Prometheus unavailability MUST pause the rollout after the configured AnalysisRun inconclusive limit; it MUST NOT promote or automatically roll back solely because monitoring disappeared.
 - `RG-GATE-011`: Bootstrap mode MUST evaluate at least one absolute gate and MUST NOT fabricate or reuse a stable baseline.
 - `RG-GATE-012`: `failureLimit` MUST mean total failed measurements, `consecutiveSuccesses` MUST mean consecutive successful measurements, and `inconclusiveLimit` MUST mean total inconclusive measurements, matching the pinned Argo Rollouts API.
+- `RG-GATE-013`: A generated metric MUST NOT declare a measurement count. Argo assesses an exhausted count as successful, and automatic promotion MUST require an explicit consecutive-success streak instead.
 
 ## 16. Event and audit specification
 

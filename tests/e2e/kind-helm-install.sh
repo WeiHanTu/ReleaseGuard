@@ -232,10 +232,16 @@ if grep -Fq "${gate_auth_token}" "${analysis_template_json}"; then
 fi
 snapshot_resource_version="$(jq -r '.spec.metrics[0].provider.web.jsonBody.policy.resourceVersion' "${analysis_template_json}")"
 [[ "${snapshot_resource_version}" == "$(${KUBECTL_BIN} get metricpolicy http-error-ratio -o jsonpath='{.metadata.resourceVersion}')" ]]
+policy_window="$(${KUBECTL_BIN} get metricpolicy http-error-ratio -o jsonpath='{.spec.window}')"
+generated_initial_delay="$(jq -r '.spec.metrics[0].initialDelay' "${analysis_template_json}")"
+[[ "${generated_initial_delay}" == "${policy_window}" ]]
 
+# The generated template delays its first measurement by one full metric window. This contract
+# check shortens only that delay so the decision path is exercised without waiting out the window.
 jq --arg namespace "${TEST_NAMESPACE}" '
   .kind = "AnalysisRun"
   | .metadata = {name: "checkout-gate-contract", namespace: $namespace}
+  | .spec.metrics |= map(.initialDelay = "5s")
   | .spec.args |= map(
       if .name == "step" then . + {value: "0"}
       elif .name == "mode" then . + {value: "Canary"}
@@ -247,7 +253,7 @@ jq --arg namespace "${TEST_NAMESPACE}" '
 ' "${analysis_template_json}" >"${analysis_run_json}"
 ${KUBECTL_BIN} apply -f "${analysis_run_json}" >/dev/null
 ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" wait \
-  --for=jsonpath='{.status.phase}'=Inconclusive analysisrun/checkout-gate-contract --timeout=90s
+  --for=jsonpath='{.status.phase}'=Inconclusive analysisrun/checkout-gate-contract --timeout=150s
 analysis_run_phase="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get analysisrun checkout-gate-contract -o jsonpath='{.status.phase}')"
 analysis_measurement_phase="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get analysisrun checkout-gate-contract -o jsonpath='{.status.metricResults[0].phase}')"
 
@@ -299,4 +305,5 @@ analysis_policy_resource_version=${snapshot_resource_version}
 analysis_token_embedded=false
 analysis_run_phase=${analysis_run_phase}
 analysis_measurement_phase=${analysis_measurement_phase}
+generated_analysis_initial_delay=${generated_initial_delay}
 EOF

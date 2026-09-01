@@ -164,6 +164,47 @@ class ReleasePlanValidatorTest {
             .hasRequirement("RG-PLAN-011"));
   }
 
+  @Test
+  void rejectsStepDurationsThatCannotFitTheGateBudget() {
+    ReleasePlanSpec tooShort =
+        TestFixtures.withSteps(
+            List.of(new ReleasePlanSpec.Step(5, "2m"), new ReleasePlanSpec.Step(100, null)));
+
+    ValidationResult result = validator.validate(tooShort, releaseContext);
+
+    assertTrue(result.hasRequirement("RG-ROLL-004"));
+    assertTrue(
+        result.errors().stream()
+            .anyMatch(error -> "spec.rollout.steps[0].duration".equals(error.path())));
+    assertTrue(
+        validator
+            .validate(
+                TestFixtures.withSteps(
+                    List.of(
+                        new ReleasePlanSpec.Step(5, "160s"), new ReleasePlanSpec.Step(100, null))),
+                releaseContext)
+            .isValid(),
+        "one window plus the remaining measurement intervals must be admissible");
+  }
+
+  @Test
+  void rejectsAPlanThatPromotesWithoutAnObservedCanaryStep() {
+    ReleasePlanSpec ungated = TestFixtures.withSteps(List.of(new ReleasePlanSpec.Step(100, null)));
+
+    assertTrue(validator.validate(ungated, releaseContext).hasRequirement("RG-ROLL-008"));
+  }
+
+  @Test
+  void gateBudgetUsesTheLargestDeclaredMeasurementCount() {
+    ReleasePlanSpec patientGate =
+        withGates(
+            TestFixtures.withSteps(
+                List.of(new ReleasePlanSpec.Step(5, "4m"), new ReleasePlanSpec.Step(100, null))),
+            List.of(new ReleasePlanSpec.Gate("http-errors", 0.01, 0.005, 2, 2, 10)));
+
+    assertTrue(validator.validate(patientGate, releaseContext).hasRequirement("RG-ROLL-004"));
+  }
+
   private static ReleasePlanSpec withWorkload(
       ReleasePlanSpec source, ReleasePlanSpec.Workload workload) {
     return new ReleasePlanSpec(

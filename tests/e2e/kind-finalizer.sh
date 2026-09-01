@@ -170,8 +170,9 @@ assert_detached() {
 
 start_candidate_release() {
   local marker="$1"
-  # Week 4 implements gate-driven terminal transitions. Simulate that future gate result here so
-  # this Week 2 test can exercise a real second ReleasePlan generation rather than mutate a child.
+  # Bootstrap gate handling is not implemented yet, so the first generation never leaves
+  # Bootstrapping on its own. Simulate that pending result here to exercise a real second
+  # ReleasePlan generation rather than mutate a child resource.
   ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" patch releaseplan checkout \
     --subresource=status --type=merge -p '{"status":{"phase":"Succeeded"}}' >/dev/null
   wait_for_value releaseplan/checkout '{.status.phase}' Succeeded 30
@@ -254,7 +255,11 @@ ${KUBECTL_BIN} create namespace "${TEST_NAMESPACE}"
 "${REPOSITORY_ROOT}/gradlew" -p "${REPOSITORY_ROOT}" :release-operator:installDist --no-daemon
 start_operator
 
-${KUBECTL_BIN} apply -f "${REPOSITORY_ROOT}/config/examples/metricpolicy-http-errors.yaml" >/dev/null
+# Argo resolves the generated AnalysisTemplate token argument from this Secret before it starts a
+# measurement. A release namespace without it fails the run closed instead of promoting.
+${KUBECTL_BIN} -n "${TEST_NAMESPACE}" create secret generic releaseguard-metric-gate-auth \
+  --from-literal="token=$(head -c 32 /dev/urandom | base64 | tr -d '\n')" >/dev/null
+${KUBECTL_BIN} apply -f "${REPOSITORY_ROOT}/tests/e2e/fixtures/metricpolicy-gate-hold.yaml" >/dev/null
 policy_generation="$(${KUBECTL_BIN} get metricpolicy http-error-ratio -o jsonpath='{.metadata.generation}')"
 ${KUBECTL_BIN} patch metricpolicy http-error-ratio --subresource=status --type=merge \
   -p "{\"status\":{\"accepted\":true,\"observedGeneration\":${policy_generation},\"reason\":\"E2EApproved\"}}" \
@@ -269,13 +274,14 @@ wait_for_nonempty endpoints/checkout-stable '{.subsets[0].addresses[0].ip}' 60 >
 wait_for_value releaseplan/checkout \
   '{.status.stableRevision}' "checkout-${stable_revision}" 60
 
-log "Starting a candidate ReleasePlan generation and pausing at five percent canary weight"
+log "Starting a candidate ReleasePlan generation and holding the first gated canary step"
 start_candidate_release candidate
-wait_for_value rollout/checkout '{.status.phase}' Paused 180
-wait_for_value releaseplan/checkout '{.status.phase}' Paused 60
-wait_for_value releaseplan/checkout '{.status.currentStep}' 0 60
 wait_for_value ingress/checkout-checkout-canary \
-  '{.metadata.annotations.nginx\.ingress\.kubernetes\.io/canary-weight}' 5 60
+  '{.metadata.annotations.nginx\.ingress\.kubernetes\.io/canary-weight}' 5 180
+delete_analysis_run="$(wait_for_nonempty rollout/checkout \
+  '{.status.canary.currentStepAnalysisRunStatus.name}' 120)"
+wait_for_value releaseplan/checkout '{.status.phase}' Progressing 60
+wait_for_value releaseplan/checkout '{.status.currentStep}' 0 60
 wait_for_value service/checkout-stable \
   '{.spec.selector.rollouts-pod-template-hash}' "${stable_revision}" 60
 candidate_revision="$(wait_for_nonempty rollout/checkout '{.status.currentPodHash}' 30)"
@@ -358,11 +364,12 @@ orphan_plan_uid="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get releaseplan checkou
   -o jsonpath='{.metadata.uid}')"
 
 start_candidate_release orphan-candidate
-wait_for_value rollout/checkout '{.status.phase}' Paused 180
-wait_for_value releaseplan/checkout '{.status.phase}' Paused 60
-wait_for_value releaseplan/checkout '{.status.currentStep}' 0 60
 wait_for_value ingress/checkout-checkout-canary \
-  '{.metadata.annotations.nginx\.ingress\.kubernetes\.io/canary-weight}' 5 60
+  '{.metadata.annotations.nginx\.ingress\.kubernetes\.io/canary-weight}' 5 180
+orphan_analysis_run="$(wait_for_nonempty rollout/checkout \
+  '{.status.canary.currentStepAnalysisRunStatus.name}' 120)"
+wait_for_value releaseplan/checkout '{.status.phase}' Progressing 60
+wait_for_value releaseplan/checkout '{.status.currentStep}' 0 60
 orphan_candidate_revision="$(wait_for_nonempty rollout/checkout '{.status.currentPodHash}' 30)"
 wait_for_value releaseplan/checkout \
   '{.status.canaryRevision}' "checkout-${orphan_candidate_revision}" 60
@@ -427,6 +434,8 @@ delete_stable_revision=${delete_stable_revision}
 delete_candidate_revision=${candidate_revision}
 releaseplan_phase_at_canary=${delete_releaseplan_phase}
 releaseplan_current_step_at_canary=${delete_releaseplan_step}
+step_analysis_run=${delete_analysis_run}
+orphan_step_analysis_run=${orphan_analysis_run}
 child_event_sources=Rollout,Service,Ingress
 service_selector_handoff_conflicts=${ownership_conflicts}
 canary_weight_before_outage=5

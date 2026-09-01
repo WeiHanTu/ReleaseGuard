@@ -2,6 +2,7 @@ package dev.weihantu.releaseguard.operator;
 
 import dev.weihantu.releaseguard.api.v1alpha1.MetricPolicySpec;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlan;
+import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanSpec;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanStatus;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanStatus.Phase;
 import dev.weihantu.releaseguard.api.validation.ReleasePlanValidationContext;
@@ -21,6 +22,8 @@ import java.util.Objects;
 
 public final class ReleasePlanPlanner {
   private static final Duration IMMEDIATE_REQUEUE = Duration.ofMillis(1);
+  // Rollback completion depends on Endpoints, which the operator does not watch.
+  private static final Duration ROLLBACK_REQUEUE = Duration.ofSeconds(5);
 
   private final ReleasePlanValidator validator;
   private final ReleaseResourceRenderer renderer;
@@ -77,6 +80,7 @@ public final class ReleasePlanPlanner {
               null,
               current == null ? null : current.stableRevision(),
               null,
+              null,
               "ValidationPending",
               "Validating release plan generation " + generation);
       return new ReconciliationPlan(status, List.of(), IMMEDIATE_REQUEUE);
@@ -105,17 +109,16 @@ public final class ReleasePlanPlanner {
               0,
               current.stableRevision(),
               revision,
+              current.lastGateDecision(),
               next == Phase.Bootstrapping ? "BootstrapPrepared" : "RolloutPrepared",
               "Desired rollout resources are prepared and metric-gated progression is pending");
       return new ReconciliationPlan(status, renderer.render(plan, acceptedPolicies), null);
     }
 
-    if (currentPhase == Phase.Bootstrapping || currentPhase == Phase.Progressing) {
-      return activeRelease(
-          plan, current, identity, currentPhase, acceptedPolicies, rolloutObservation);
-    }
-
-    if (currentPhase == Phase.Paused) {
+    if (currentPhase == Phase.Bootstrapping
+        || currentPhase == Phase.Progressing
+        || currentPhase == Phase.Paused
+        || currentPhase == Phase.RollingBack) {
       return activeRelease(
           plan, current, identity, currentPhase, acceptedPolicies, rolloutObservation);
     }
@@ -130,11 +133,13 @@ public final class ReleasePlanPlanner {
       Phase currentPhase,
       Map<String, MetricPolicySnapshot> acceptedPolicies,
       RolloutObservation observation) {
-    Phase phase = projectedPhase(currentPhase, observation);
+    ReleasePlanSpec spec = plan.getSpec();
+    Phase phase = projectedPhase(currentPhase, observation, spec);
     phaseMachine.requireTransition(currentPhase, phase);
     String stableRevision = current.stableRevision();
     String canaryRevision = current.canaryRevision();
     Integer currentStep = current.currentStep();
+    ReleasePlanStatus.GateDecision gateDecision = gateDecision(current, observation);
     String reason;
     String message;
 
@@ -147,16 +152,49 @@ public final class ReleasePlanPlanner {
     } else {
       stableRevision = qualifiedRevision(identity.name(), observation.stablePodHash());
       canaryRevision = candidateRevision(identity.name(), observation);
-      currentStep =
-          logicalStep(observation.currentStepIndex(), plan.getSpec().rollout().steps().size());
-      reason = observationReason(currentPhase, observation);
-      message = observationMessage(currentPhase, observation);
+      currentStep = logicalStep(observation.currentStepIndex(), spec);
+      reason = observationReason(currentPhase, phase, observation, gateDecision);
+      message = observationMessage(currentPhase, phase, observation, gateDecision);
     }
 
     ReleasePlanStatus status =
         status(
-            current, identity, phase, currentStep, stableRevision, canaryRevision, reason, message);
-    return new ReconciliationPlan(status, renderer.render(plan, acceptedPolicies), null);
+            current,
+            identity,
+            phase,
+            currentStep,
+            stableRevision,
+            canaryRevision,
+            gateDecision,
+            reason,
+            message);
+    return new ReconciliationPlan(
+        status,
+        renderer.render(plan, acceptedPolicies),
+        phase == Phase.RollingBack ? ROLLBACK_REQUEUE : null);
+  }
+
+  /**
+   * Records the Argo verdict for the current canary step. The decision is only refreshed when Argo
+   * reports a different terminal AnalysisRun outcome, so repeated reconciliation of unchanged input
+   * produces an identical status (RG-REC-001).
+   */
+  private ReleasePlanStatus.GateDecision gateDecision(
+      ReleasePlanStatus current, RolloutObservation observation) {
+    ReleasePlanStatus.GateDecision previous = current.lastGateDecision();
+    if (!observation.present()
+        || !observation.statusCurrent()
+        || !observation.stepAnalysis().decided()) {
+      return previous;
+    }
+    String evidenceRef = "AnalysisRun/" + observation.stepAnalysis().name();
+    String decision = observation.stepAnalysis().phase();
+    if (previous != null
+        && evidenceRef.equals(previous.evidenceRef())
+        && decision.equals(previous.decision())) {
+      return previous;
+    }
+    return new ReleasePlanStatus.GateDecision(decision, evidenceRef, Instant.now(clock).toString());
   }
 
   private static Map<String, MetricPolicySpec> policySpecs(
@@ -166,8 +204,16 @@ public final class ReleasePlanPlanner {
     return Map.copyOf(specs);
   }
 
-  private static Phase projectedPhase(Phase currentPhase, RolloutObservation observation) {
+  private static Phase projectedPhase(
+      Phase currentPhase, RolloutObservation observation, ReleasePlanSpec spec) {
     if (!observation.present() || !observation.statusCurrent()) {
+      return currentPhase;
+    }
+    if (observation.abort().requested()) {
+      return abortedPhase(currentPhase, observation);
+    }
+    if (currentPhase == Phase.RollingBack || currentPhase == Phase.Paused) {
+      // Leaving Paused requires an operator action; a resumed child alone cannot promote.
       return currentPhase;
     }
     if ("Degraded".equals(observation.argoPhase())) {
@@ -176,15 +222,51 @@ public final class ReleasePlanPlanner {
     if (currentPhase == Phase.Bootstrapping) {
       return currentPhase;
     }
-    boolean paused =
-        "Paused".equals(observation.argoPhase()) || "Suspended".equals(observation.argoPhase());
-    if (paused) {
+    if (observation.pausedByInconclusiveGate()
+        || "Paused".equals(observation.argoPhase())
+        || "Suspended".equals(observation.argoPhase())) {
       return Phase.Paused;
+    }
+    if (observation.promoted(ReleaseResourceRenderer.argoStepCount(spec))) {
+      return Phase.Succeeded;
     }
     return currentPhase;
   }
 
-  private static String observationReason(Phase currentPhase, RolloutObservation observation) {
+  private static Phase abortedPhase(Phase currentPhase, RolloutObservation observation) {
+    if (currentPhase == Phase.Bootstrapping) {
+      // RG-BOOT-003: a bootstrap has no baseline to restore, so it fails instead of rolling back.
+      return Phase.Failed;
+    }
+    if (currentPhase == Phase.RollingBack && observation.abort().restored()) {
+      return Phase.RolledBack;
+    }
+    return Phase.RollingBack;
+  }
+
+  private static String observationReason(
+      Phase currentPhase,
+      Phase phase,
+      RolloutObservation observation,
+      ReleasePlanStatus.GateDecision gateDecision) {
+    if (phase == Phase.Succeeded) {
+      // Argo can be promoted by hand. Full traffic alone must not claim ReleaseGuard gate approval.
+      return decided(gateDecision, "Successful")
+          ? "GateApprovedPromotion"
+          : "PromotionObservedWithoutGateEvidence";
+    }
+    if (phase == Phase.RolledBack) {
+      return "StableTrafficRestored";
+    }
+    if (phase == Phase.RollingBack) {
+      return failedGate(observation, gateDecision) ? "GateFailedRollback" : "RolloutAbortObserved";
+    }
+    if (phase == Phase.Failed && observation.abort().requested()) {
+      return "BootstrapAborted";
+    }
+    if (observation.pausedByInconclusiveGate()) {
+      return "GateInconclusivePause";
+    }
     if (currentPhase == Phase.Bootstrapping && "Healthy".equals(observation.argoPhase())) {
       return "BootstrapReadyAwaitingGate";
     }
@@ -197,11 +279,42 @@ public final class ReleasePlanPlanner {
     return "ArgoRolloutObserved";
   }
 
-  private static String observationMessage(Phase currentPhase, RolloutObservation observation) {
+  private static String observationMessage(
+      Phase currentPhase,
+      Phase phase,
+      RolloutObservation observation,
+      ReleasePlanStatus.GateDecision gateDecision) {
+    if (phase == Phase.Succeeded) {
+      return decided(gateDecision, "Successful")
+          ? "Every declared gate passed and Argo Rollouts promoted the candidate to full traffic"
+          : "Argo Rollouts reached full traffic without an observed terminal gate decision";
+    }
+    if (phase == Phase.RolledBack) {
+      return "Canary traffic is zero and the stable Service has ready endpoints";
+    }
+    if (phase == Phase.RollingBack) {
+      return failedGate(observation, gateDecision)
+          ? "Argo Rollouts is restoring the stable revision after a failed gate"
+          : "Argo Rollouts is restoring the stable revision after an abort request";
+    }
+    if (observation.pausedByInconclusiveGate()) {
+      return "Metric evidence was inconclusive; promotion requires an explicit operator action";
+    }
     if (currentPhase == Phase.Bootstrapping && "Healthy".equals(observation.argoPhase())) {
       return "Bootstrap workload is ready; administrator-approved metric evidence is still required";
     }
     return "Observed Argo Rollout phase " + observation.argoPhase();
+  }
+
+  private static boolean decided(ReleasePlanStatus.GateDecision decision, String phase) {
+    return decision != null && phase.equals(decision.decision());
+  }
+
+  private static boolean failedGate(
+      RolloutObservation observation, ReleasePlanStatus.GateDecision decision) {
+    return observation.stepAnalysis().failed()
+        || decided(decision, "Failed")
+        || decided(decision, "Error");
   }
 
   private static String candidateRevision(String name, RolloutObservation observation) {
@@ -220,14 +333,15 @@ public final class ReleasePlanPlanner {
     return podHash.startsWith(name + "-") ? podHash : name + "-" + podHash;
   }
 
-  private static Integer logicalStep(Integer argoStepIndex, int releaseStepCount) {
+  private static Integer logicalStep(Integer argoStepIndex, ReleasePlanSpec spec) {
+    int releaseStepCount = spec.rollout().steps().size();
     if (releaseStepCount == 0) {
       return null;
     }
     if (argoStepIndex == null) {
       return releaseStepCount - 1;
     }
-    return Math.min(argoStepIndex / 2, releaseStepCount - 1);
+    return ReleaseResourceRenderer.releaseStep(spec, argoStepIndex);
   }
 
   private ReconciliationPlan failed(
@@ -248,6 +362,7 @@ public final class ReleasePlanPlanner {
             current == null ? null : current.currentStep(),
             current == null ? null : current.stableRevision(),
             current == null ? null : current.canaryRevision(),
+            sameGeneration(current, identity.generation()) ? current.lastGateDecision() : null,
             reason,
             message);
     return new ReconciliationPlan(failed, List.of(), null);
@@ -260,9 +375,11 @@ public final class ReleasePlanPlanner {
       Integer currentStep,
       String stableRevision,
       String canaryRevision,
+      ReleasePlanStatus.GateDecision gateDecision,
       String reason,
       String message) {
-    List<Condition> conditions = conditions(current, identity.generation(), phase, reason, message);
+    List<Condition> conditions =
+        conditions(current, identity.generation(), phase, gateDecision, reason, message);
     return new ReleasePlanStatus(
         identity.generation(),
         identity.releaseId(),
@@ -276,14 +393,19 @@ public final class ReleasePlanPlanner {
                 || phase == Phase.RollingBack
             ? new ReleasePlanStatus.ResourceReference(identity.name())
             : null,
-        sameGeneration(current, identity.generation()) ? current.lastGateDecision() : null,
+        gateDecision,
         sameGeneration(current, identity.generation()) ? current.lastTransition() : null,
         sameGeneration(current, identity.generation()) ? current.pendingOutboxEvents() : null,
         conditions);
   }
 
   private List<Condition> conditions(
-      ReleasePlanStatus current, long generation, Phase phase, String reason, String message) {
+      ReleasePlanStatus current,
+      long generation,
+      Phase phase,
+      ReleasePlanStatus.GateDecision gateDecision,
+      String reason,
+      String message) {
     List<Condition> conditions = new ArrayList<>();
     conditions.add(condition(current, "Ready", "False", generation, reason, message));
     conditions.add(
@@ -294,14 +416,7 @@ public final class ReleasePlanPlanner {
             generation,
             reason,
             message));
-    conditions.add(
-        condition(
-            current,
-            "GateHealthy",
-            "Unknown",
-            generation,
-            "AwaitingMetricEvidence",
-            "No metric-gate decision has been observed"));
+    conditions.add(gateCondition(current, generation, gateDecision));
     conditions.add(
         condition(
             current,
@@ -323,6 +438,38 @@ public final class ReleasePlanPlanner {
             reason,
             message));
     return List.copyOf(conditions);
+  }
+
+  private Condition gateCondition(
+      ReleasePlanStatus current, long generation, ReleasePlanStatus.GateDecision gateDecision) {
+    if (gateDecision == null) {
+      return condition(
+          current,
+          "GateHealthy",
+          "Unknown",
+          generation,
+          "AwaitingMetricEvidence",
+          "No metric-gate decision has been observed");
+    }
+    String value =
+        switch (gateDecision.decision()) {
+          case "Successful" -> "True";
+          case "Failed", "Error" -> "False";
+          default -> "Unknown";
+        };
+    String reason =
+        switch (gateDecision.decision()) {
+          case "Successful" -> "GatePassed";
+          case "Failed", "Error" -> "GateFailed";
+          default -> "GateInconclusive";
+        };
+    return condition(
+        current,
+        "GateHealthy",
+        value,
+        generation,
+        reason,
+        "Argo reported " + gateDecision.decision() + " for " + gateDecision.evidenceRef());
   }
 
   private Condition condition(

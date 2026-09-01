@@ -95,12 +95,29 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
 
   @Override
   public RolloutObservation observeRollout(ReleasePlan plan, Context<ReleasePlan> context) {
-    GenericKubernetesResource rollout =
-        rollout(context, plan.getMetadata().getNamespace(), plan.getMetadata().getName()).get();
+    String namespace = plan.getMetadata().getNamespace();
+    String name = plan.getMetadata().getName();
+    GenericKubernetesResource rollout = rollout(context, namespace, name).get();
     if (rollout == null) {
       return RolloutObservation.missing();
     }
 
+    Map<?, ?> status = asMap(rollout.getAdditionalProperties().get("status"));
+    RolloutObservation.Abort abort = RolloutObservation.Abort.NONE;
+    if (Boolean.TRUE.equals(status.get("abort"))) {
+      String stableReplicaSet = stringValue(status.get("stableRS"));
+      abort =
+          new RolloutObservation.Abort(
+              true,
+              status.get("abortedAt") != null,
+              canaryTrafficZero(context, namespace, name),
+              stableTrafficRestored(context, namespace, name, stableReplicaSet));
+    }
+    return rolloutObservation(rollout, abort);
+  }
+
+  static RolloutObservation rolloutObservation(
+      GenericKubernetesResource rollout, RolloutObservation.Abort abort) {
     Map<?, ?> status = asMap(rollout.getAdditionalProperties().get("status"));
     Long generation = rollout.getMetadata().getGeneration();
     Long observedGeneration = longValue(status.get("observedGeneration"));
@@ -108,6 +125,7 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
         generation != null
             && observedGeneration != null
             && observedGeneration.longValue() >= generation.longValue();
+    Map<?, ?> stepAnalysis = asMap(asMap(status.get("canary")).get("currentStepAnalysisRunStatus"));
     return new RolloutObservation(
         true,
         statusCurrent,
@@ -116,7 +134,50 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
         stringValue(status.get("stableRS")),
         stringValue(status.get("currentPodHash")),
         integerValue(status.get("replicas")),
-        integerValue(status.get("readyReplicas")));
+        integerValue(status.get("readyReplicas")),
+        abort,
+        pauseReasons(status.get("pauseConditions")),
+        new RolloutObservation.StepAnalysis(
+            stringValue(stepAnalysis.get("name")), stringValue(stepAnalysis.get("status"))));
+  }
+
+  private static List<String> pauseReasons(Object pauseConditions) {
+    if (!(pauseConditions instanceof List<?> conditions)) {
+      return List.of();
+    }
+    return conditions.stream()
+        .map(KubernetesReconciliationRuntime::asMap)
+        .map(condition -> stringValue(condition.get("reason")))
+        .filter(Objects::nonNull)
+        .toList();
+  }
+
+  private static boolean canaryTrafficZero(
+      Context<ReleasePlan> context, String namespace, String name) {
+    Ingress canaryIngress =
+        context
+            .getClient()
+            .network()
+            .v1()
+            .ingresses()
+            .inNamespace(namespace)
+            .withName(canaryIngressName(name))
+            .get();
+    return canaryIngress == null
+        || (canaryIngress.getMetadata().getAnnotations() != null
+            && "0"
+                .equals(
+                    canaryIngress.getMetadata().getAnnotations().get(CANARY_WEIGHT_ANNOTATION)));
+  }
+
+  private static boolean stableTrafficRestored(
+      Context<ReleasePlan> context, String namespace, String name, String stableReplicaSet) {
+    Service stableService =
+        context.getClient().services().inNamespace(namespace).withName(name + "-stable").get();
+    return stableReplicaSet != null
+        && !stableReplicaSet.isBlank()
+        && stableReplicaSet.equals(stableReplicaSetSelector(stableService))
+        && hasReadyEndpoint(context, namespace, name + "-stable");
   }
 
   @Override

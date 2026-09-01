@@ -28,7 +28,7 @@ spec:
   rollout:
     steps:
       - weight: 5
-        duration: 2m
+        duration: 5m
       - weight: 25
         duration: 5m
       - weight: 50

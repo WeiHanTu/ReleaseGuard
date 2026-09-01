@@ -30,7 +30,7 @@ spec:
   rollout:
     steps:
       - weight: 5
-        duration: 10s
+        duration: 5m
       - weight: 100
     gates:
       - policyRef: http-error-ratio

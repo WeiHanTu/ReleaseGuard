@@ -20,9 +20,9 @@ Installing Argo CD, Kafka, and Grafana is not sufficient. ReleaseGuard must own 
 
 ## 2. Status and evidence policy
 
-Current status: **Week 3 complete; Week 4 metric-gate packaging and generated AnalysisTemplate contract implemented, Rollout linkage next**.
+Current status: **Week 3 complete; Week 4 metric gates linked into Rollout steps, live gated-rollout evidence outstanding**.
 
-The Java 21 multi-module build, four API models, semantic validators, deterministic CRD generation, architecture decisions, contract tests, Week 2 operator control loop, hardened operator and metric-gate images, Helm installation path, Argo CD Git synchronization, offline plan CLI, authenticated stateless metric-gate service, and generation-scoped AnalysisTemplate rendering are implemented. Rollout-linked AnalysisRuns and automated rollout outcomes remain planned. Numbers marked as targets are acceptance criteria, not benchmark results or resume claims.
+The Java 21 multi-module build, four API models, semantic validators, deterministic CRD generation, architecture decisions, contract tests, Week 2 operator control loop, hardened operator and metric-gate images, Helm installation path, Argo CD Git synchronization, offline plan CLI, authenticated stateless metric-gate service, generation-scoped AnalysisTemplate rendering, and gate-driven canary steps with promotion, pause, and rollback projection are implemented. A live gated rollout against real canary traffic and a running Prometheus server has not been executed, and bootstrap gate handling, rollback deadlines, and operator actions remain planned. Numbers marked as targets are acceptance criteria, not benchmark results or resume claims.
 
 Evidence rules:
 
@@ -192,7 +192,7 @@ spec:
   rollout:
     steps:
       - weight: 5
-        duration: 2m
+        duration: 5m
       - weight: 25
         duration: 5m
       - weight: 50
@@ -578,7 +578,7 @@ Exit achieved: `./gradlew clean check` regenerates and compares all four committ
 - [x] Render deterministic Argo Rollout resources.
 - [x] Test duplicate reconciliation, resource deletion, and optimistic-concurrency conflicts.
 
-Implemented evidence includes the Java Operator SDK adapter, generation-scoped validation, generation-stable selectors, fail-closed Argo rendering, server-side-apply ownership handoff, eight-attempt exponential retry, and bounded `Delete`/`OrphanStable` finalization. Rollout, Service, and Ingress informer events map back to the owning plan; only generation-current Argo status updates phase, logical step, and stable/canary revisions. A kube-apiserver integration test injects a concurrent primary-status update immediately before a resource-versioned write, observes a real `409`, verifies full recomputation from the newer version, preserves concurrent phase and revision evidence, and converges without duplicate children. A checksum-pinned Kind test uses an explicit simulated bootstrap-gate result to create a second ReleasePlan generation, observes its real 5% pause as `Paused`/step `0`, and runs both deletion policies. `Delete` holds its finalizer through an Argo outage and captures abort acknowledgment, `5% -> 0%` restoration, and child deletion. `OrphanStable` retains exactly one two-replica stable ReplicaSet plus stable networking and survives Argo/ReleaseGuard restarts without canary recreation. It does not run ingress-nginx, so this is control-plane and ready-endpoint evidence rather than request-routing evidence, and it does not prove automated promotion. Gate-driven terminal transitions remain planned for Week 4.
+Implemented evidence includes the Java Operator SDK adapter, generation-scoped validation, generation-stable selectors, fail-closed Argo rendering, server-side-apply ownership handoff, eight-attempt exponential retry, and bounded `Delete`/`OrphanStable` finalization. Rollout, Service, and Ingress informer events map back to the owning plan; only generation-current Argo status updates phase, logical step, and stable/canary revisions. A kube-apiserver integration test injects a concurrent primary-status update immediately before a resource-versioned write, observes a real `409`, verifies full recomputation from the newer version, preserves concurrent phase and revision evidence, and converges without duplicate children. A checksum-pinned Kind test uses an explicit simulated bootstrap-gate result to create a second ReleasePlan generation, observes its real gated canary step holding 5% traffic as `Progressing`/step `0`, and runs both deletion policies. `Delete` holds its finalizer through an Argo outage and captures abort acknowledgment, `5% -> 0%` restoration, and child deletion. `OrphanStable` retains exactly one two-replica stable ReplicaSet plus stable networking and survives Argo/ReleaseGuard restarts without canary recreation. It does not run ingress-nginx or Prometheus, so this is control-plane and ready-endpoint evidence rather than request-routing or metric-driven evidence, and it does not prove automated promotion.
 
 Exit achieved: unchanged, duplicate-event, restart, deletion, and conflict-injected reconciliations converge without duplicate or oscillating resources.
 
@@ -598,12 +598,14 @@ Week 3 exit achieved: a Git change reaches the cluster without an imperative dep
 - [x] Implement fake Prometheus and gate-service contract.
 - [x] Add error-rate, p95-latency, sample-count, and missing-data policies.
 - [x] Package and authenticate the gate for Helm-managed cluster deployment.
-- Connect AnalysisRun to gate decisions.
+- [x] Connect AnalysisRun to gate decisions.
 - Automate healthy promotion and faulty rollback.
 
 Implemented evidence: the Spring Boot internal API executes distinct canary/stable value and sample-count queries through a bounded Java HTTP client, validates administrator policy bounds and safe substitution contexts, and implements both `LowerIsBetter` and `HigherIsBetter` predicates. Empty vectors, unexpected series, partial responses, non-finite values, stale observations, timeouts, malformed responses, provider errors, invalid sample counts, and insufficient samples all return machine-readable `Inconclusive` outcomes. Completed threshold breaches return `Fail`. Canonical request, query, observation, and decision evidence produces a SHA-256 digest; low-cardinality Micrometer metrics, health probes, and graceful shutdown are enabled. Thirty-four focused tests include a purpose-built fake Prometheus HTTP server, the full controller-to-provider contract, uniform unauthorized responses, minimum token strength, and token redaction. A second pinned Distroless image is bounded to 50 MiB of application layers; Helm deploys it without a service-account token behind a `ClusterIP`, injects authentication through an existing Secret reference, and exposes probes and metrics. The clean Kind path verifies live startup, unauthenticated rejection, authorized request admission, and absence of inline credential material. This is cluster deployment and service-level evidence, not automated rollout evidence.
 
-Exit pending: good and bad releases do not yet drive repeatable Argo promotion and rollback outcomes.
+Rollout linkage evidence: every nonterminal step renders `setWeight` followed by a blocking `analysis` step that names the generation's AnalysisTemplate and passes the step index, canary mode, and Argo stable/latest pod-template hashes; weight 100 remains a bare promotion step reachable only through the preceding gates. Each metric delays its first measurement by one policy window, declares no measurement count so promotion requires an explicit consecutive-success streak, bounds consecutive transport errors, and runs under a progress deadline derived from the longest declared step. Plans whose step duration cannot contain `window + (max(failureLimit, consecutiveSuccesses, inconclusiveLimit) - 1) x interval` are rejected as `RG-ROLL-004` errors. The operator projects Argo outcomes into `Succeeded`, `Paused` on an inconclusive-analysis pause condition, and `RollingBack` followed by `RolledBack` only after observed zero canary ingress weight and ready stable endpoints, recording the AnalysisRun name and verdict as `status.lastGateDecision`. This is rendering, validation, and status-projection evidence from unit tests plus a clean Kind run that executes the generated template as a real AnalysisRun and holds a real gated canary step; it is not evidence of a metric-driven promotion or rollback.
+
+Exit pending: no clean-cluster run has yet driven a good and a bad release through real canary traffic and a live Prometheus server. That demonstration needs an instrumented demo workload, ingress-nginx, and Prometheus in the test cluster. Bootstrap gate handling (`RG-BOOT-002`), the `rollbackDeadline` transition to `Failed` (`RG-RBK-003`, `RG-RBK-004`), `ReleaseAction`-driven resume from `Paused` (`RG-ACT-005`), and pruning superseded generation AnalysisTemplates are not implemented.
 
 ### Week 5: Kafka and audit API
 

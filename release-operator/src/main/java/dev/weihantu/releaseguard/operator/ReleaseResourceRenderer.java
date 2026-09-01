@@ -11,12 +11,14 @@ import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
 import io.fabric8.kubernetes.api.model.OwnerReference;
 import io.fabric8.kubernetes.api.model.OwnerReferenceBuilder;
 import io.fabric8.kubernetes.api.model.PodTemplateSpec;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 public final class ReleaseResourceRenderer {
   public static final String API_VERSION = "delivery.weihantu.dev/v1alpha1";
@@ -28,6 +30,14 @@ public final class ReleaseResourceRenderer {
   public static final String REVISION_LABEL = "delivery.weihantu.dev/revision";
   private static final String ANALYSIS_API_VERSION = "argoproj.io/v1alpha1";
   private static final String AUTHORIZATION_TOKEN_ARG = "authorization-token";
+  private static final String STEP_ARG = "step";
+  private static final String MODE_ARG = "mode";
+  private static final String STABLE_REVISION_ARG = "stable-revision";
+  private static final String CANARY_REVISION_ARG = "canary-revision";
+  private static final String CANARY_MODE = "Canary";
+  private static final int TERMINAL_WEIGHT = 100;
+  private static final long ARGO_DEFAULT_PROGRESS_DEADLINE_SECONDS = 600L;
+  private static final long PROGRESS_DEADLINE_SLACK_SECONDS = 300L;
   private static final List<Map.Entry<String, String>> POLICY_TEMPLATE_ARGS =
       List.of(
           Map.entry("revision", "policy-placeholder-revision"),
@@ -132,9 +142,13 @@ public final class ReleaseResourceRenderer {
     Map<String, Object> metric = new LinkedHashMap<>();
     metric.put("name", metricName(index, gate.policyRef()));
     metric.put("interval", policy.interval());
+    // The first measurement must observe a full post-shift window; a shorter delay would judge the
+    // candidate on stable-only samples and burn the inconclusive budget.
+    metric.put("initialDelay", policy.window());
     metric.put("failureLimit", gate.failureLimit());
     metric.put("consecutiveSuccessLimit", gate.consecutiveSuccesses());
     metric.put("inconclusiveLimit", gate.inconclusiveLimit());
+    metric.put("consecutiveErrorLimit", gate.inconclusiveLimit());
     metric.put("successCondition", "result == \"Pass\"");
     metric.put("failureCondition", "result == \"Fail\"");
     metric.put("provider", Map.of("web", web));
@@ -299,12 +313,11 @@ public final class ReleaseResourceRenderer {
     template.put("spec", sourceTemplate.getSpec());
 
     List<Map<String, Object>> steps = new ArrayList<>();
-    for (ReleasePlanSpec.Step step : spec.rollout().steps()) {
-      steps.add(Map.of("setWeight", step.weight()));
-      if (step.weight() < 100) {
-        // AnalysisRun integration is not enabled yet. An indefinite pause is fail-closed until
-        // then.
-        steps.add(Map.of("pause", Map.of()));
+    List<ReleasePlanSpec.Step> releaseSteps = spec.rollout().steps();
+    for (int index = 0; index < releaseSteps.size(); index++) {
+      steps.add(Map.of("setWeight", releaseSteps.get(index).weight()));
+      if (releaseSteps.get(index).weight() < TERMINAL_WEIGHT) {
+        steps.add(Map.of("analysis", gateAnalysis(identity, index)));
       }
     }
 
@@ -316,12 +329,73 @@ public final class ReleaseResourceRenderer {
 
     Map<String, Object> rolloutSpec = new LinkedHashMap<>();
     rolloutSpec.put("replicas", spec.workload().replicas());
+    rolloutSpec.put("progressDeadlineSeconds", progressDeadlineSeconds(spec));
     rolloutSpec.put("selector", Map.of("matchLabels", selectorLabels));
     rolloutSpec.put("template", template);
     rolloutSpec.put("strategy", Map.of("canary", canary));
 
     return resource(
         ANALYSIS_API_VERSION, "Rollout", metadata(identity, identity.name()), rolloutSpec);
+  }
+
+  private static Map<String, Object> gateAnalysis(Identity identity, int releaseStep) {
+    Map<String, Object> analysis = new LinkedHashMap<>();
+    analysis.put("templates", List.of(Map.of("templateName", analysisTemplateName(identity))));
+    analysis.put(
+        "args",
+        List.of(
+            Map.of("name", STEP_ARG, "value", Integer.toString(releaseStep)),
+            Map.of("name", MODE_ARG, "value", CANARY_MODE),
+            Map.of(
+                "name", STABLE_REVISION_ARG, "valueFrom", Map.of("podTemplateHashValue", "Stable")),
+            Map.of(
+                "name",
+                CANARY_REVISION_ARG,
+                "valueFrom",
+                Map.of("podTemplateHashValue", "Latest"))));
+    return Map.copyOf(analysis);
+  }
+
+  /** Counts the Argo steps rendered for a plan so observed indexes can be interpreted. */
+  static int argoStepCount(ReleasePlanSpec spec) {
+    int count = 0;
+    for (ReleasePlanSpec.Step step : spec.rollout().steps()) {
+      count++;
+      if (step.weight() < TERMINAL_WEIGHT) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /** Maps an observed Argo step index back to the declared ReleaseGuard step index. */
+  static int releaseStep(ReleasePlanSpec spec, int argoStepIndex) {
+    List<ReleasePlanSpec.Step> steps = spec.rollout().steps();
+    int argoStep = 0;
+    for (int index = 0; index < steps.size(); index++) {
+      argoStep++;
+      if (steps.get(index).weight() < TERMINAL_WEIGHT) {
+        argoStep++;
+      }
+      if (argoStepIndex < argoStep) {
+        return index;
+      }
+    }
+    return steps.size() - 1;
+  }
+
+  private static int progressDeadlineSeconds(ReleasePlanSpec spec) {
+    long longestStep =
+        spec.rollout().steps().stream()
+            .map(ReleasePlanSpec.Step::duration)
+            .map(KubernetesDuration::parse)
+            .flatMap(Optional::stream)
+            .mapToLong(Duration::toSeconds)
+            .max()
+            .orElse(0L);
+    return Math.toIntExact(
+        Math.max(
+            ARGO_DEFAULT_PROGRESS_DEADLINE_SECONDS, longestStep + PROGRESS_DEADLINE_SLACK_SECONDS));
   }
 
   private static GenericKubernetesResource resource(

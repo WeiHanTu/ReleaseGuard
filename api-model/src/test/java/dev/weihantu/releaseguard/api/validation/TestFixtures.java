@@ -31,7 +31,7 @@ final class TestFixtures {
   static ReleasePlanSpec plan() {
     return withSteps(
         List.of(
-            new ReleasePlanSpec.Step(5, "2m"),
+            new ReleasePlanSpec.Step(5, "5m"),
             new ReleasePlanSpec.Step(25, "5m"),
             new ReleasePlanSpec.Step(100, null)));
   }

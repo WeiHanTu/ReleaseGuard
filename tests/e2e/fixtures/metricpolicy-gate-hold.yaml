@@ -1,0 +1,27 @@
+# End-to-end fixture policy. The ten-minute window makes the generated AnalysisRun wait through its
+# initial delay, so a canary step holds its declared traffic weight for the duration of a test
+# without depending on a reachable metric-gate service or Prometheus server.
+apiVersion: delivery.weihantu.dev/v1alpha1
+kind: MetricPolicy
+metadata:
+  name: http-error-ratio
+spec:
+  direction: LowerIsBetter
+  unit: ratio
+  valueQueryTemplate: |
+    sum(rate(http_server_requests_seconds_count{release_revision="{{revision}}",status=~"5.."}[{{window}}]))
+    /
+    sum(rate(http_server_requests_seconds_count{release_revision="{{revision}}"}[{{window}}]))
+  sampleCountQueryTemplate: |
+    sum(increase(http_server_requests_seconds_count{release_revision="{{revision}}"}[{{window}}]))
+  allowedThresholds:
+    canary:
+      minimum: 0
+      maximum: 0.10
+    stableDelta:
+      minimum: 0
+      maximum: 0.05
+  minimumSamples: 100
+  window: 10m
+  interval: 1m
+  timeout: 5s
