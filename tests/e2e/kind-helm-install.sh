@@ -221,6 +221,17 @@ ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" wait \
 ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" wait --for=create rollout/checkout --timeout=60s
 ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" wait \
   --for=create analysistemplate/checkout-gates-g1 --timeout=60s
+# RG-BOOT-002: readiness alone must not admit a first generation, so the operator schedules the
+# absolute gate itself for a rollout whose canary steps Argo skips.
+${KUBECTL_BIN} -n "${TEST_NAMESPACE}" wait \
+  --for=create analysisrun/checkout-bootstrap-g1 --timeout=120s
+bootstrap_mode="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get analysisrun checkout-bootstrap-g1 \
+  -o jsonpath='{.spec.args[?(@.name=="mode")].value}')"
+[[ "${bootstrap_mode}" == "Bootstrap" ]]
+[[ -z "$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get analysisrun checkout-bootstrap-g1 \
+  -o jsonpath='{.spec.args[?(@.name=="stable-revision")].value}')" ]]
+[[ "$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get releaseplan checkout \
+  -o jsonpath='{.status.phase}')" == "Bootstrapping" ]]
 
 analysis_template_json="${OUTPUT_DIRECTORY}/analysis-template.json"
 analysis_run_json="${OUTPUT_DIRECTORY}/analysis-run.json"
@@ -306,4 +317,7 @@ analysis_token_embedded=false
 analysis_run_phase=${analysis_run_phase}
 analysis_measurement_phase=${analysis_measurement_phase}
 generated_analysis_initial_delay=${generated_initial_delay}
+bootstrap_analysis_run=checkout-bootstrap-g1
+bootstrap_analysis_mode=${bootstrap_mode}
+bootstrap_baseline_supplied=false
 EOF

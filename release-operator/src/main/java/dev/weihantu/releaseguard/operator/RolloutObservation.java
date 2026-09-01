@@ -11,9 +11,11 @@ record RolloutObservation(
     String currentPodHash,
     Integer desiredReplicas,
     Integer readyReplicas,
+    boolean stableTrafficReady,
     Abort abort,
     List<String> pauseReasons,
-    StepAnalysis stepAnalysis) {
+    StepAnalysis stepAnalysis,
+    StepAnalysis bootstrapAnalysis) {
 
   static final String INCONCLUSIVE_ANALYSIS_PAUSE = "InconclusiveAnalysisRun";
 
@@ -21,6 +23,7 @@ record RolloutObservation(
     abort = abort == null ? Abort.NONE : abort;
     pauseReasons = pauseReasons == null ? List.of() : List.copyOf(pauseReasons);
     stepAnalysis = stepAnalysis == null ? StepAnalysis.NONE : stepAnalysis;
+    bootstrapAnalysis = bootstrapAnalysis == null ? StepAnalysis.NONE : bootstrapAnalysis;
   }
 
   RolloutObservation(
@@ -41,8 +44,10 @@ record RolloutObservation(
         currentPodHash,
         desiredReplicas,
         readyReplicas,
+        false,
         Abort.NONE,
         List.of(),
+        StepAnalysis.NONE,
         StepAnalysis.NONE);
   }
 
@@ -55,38 +60,47 @@ record RolloutObservation(
   }
 
   boolean promoted(int argoStepCount) {
-    return "Healthy".equals(argoPhase)
-        && currentStepIndex != null
-        && currentStepIndex >= argoStepCount
-        && stablePodHash != null
-        && stablePodHash.equals(currentPodHash);
+    return fullyPromoted() && currentStepIndex != null && currentStepIndex >= argoStepCount;
   }
 
   /**
-   * Argo abort evidence. {@code canaryTrafficZero} and {@code stableTrafficRestored} are observed
-   * from the traffic path rather than from Rollout status, so RG-RBK-002 completion is not claimed
-   * from an accepted abort request alone.
+   * RG-BOOT-002: the bootstrap candidate is ready only when Argo reports a healthy, fully promoted
+   * revision and the stable Service actually has ready endpoints behind it.
    */
-  record Abort(
-      boolean requested,
-      boolean acknowledged,
-      boolean canaryTrafficZero,
-      boolean stableTrafficRestored) {
-    static final Abort NONE = new Abort(false, false, false, false);
-
-    boolean restored() {
-      return acknowledged && canaryTrafficZero && stableTrafficRestored;
-    }
+  boolean bootstrapWorkloadReady() {
+    return fullyPromoted() && stableTrafficReady;
   }
 
-  /** The AnalysisRun Argo is running, or last ran, for the current canary step. */
+  /** RG-RBK-002: rollback completes on observed traffic, not on an accepted abort request. */
+  boolean rollbackComplete() {
+    return abort.acknowledged() && abort.canaryTrafficZero() && stableTrafficReady;
+  }
+
+  private boolean fullyPromoted() {
+    return statusCurrent
+        && "Healthy".equals(argoPhase)
+        && stablePodHash != null
+        && !stablePodHash.isBlank()
+        && stablePodHash.equals(currentPodHash);
+  }
+
+  /** Argo abort evidence, paired with the observed canary traffic weight. */
+  record Abort(boolean requested, boolean acknowledged, boolean canaryTrafficZero) {
+    static final Abort NONE = new Abort(false, false, false);
+  }
+
+  /** An AnalysisRun Argo is running, or last ran, for this release. */
   record StepAnalysis(String name, String phase) {
     private static final List<String> TERMINAL_PHASES =
         List.of("Successful", "Failed", "Error", "Inconclusive");
     static final StepAnalysis NONE = new StepAnalysis(null, null);
 
+    boolean created() {
+      return name != null && !name.isBlank();
+    }
+
     boolean decided() {
-      return name != null && !name.isBlank() && TERMINAL_PHASES.contains(phase);
+      return created() && TERMINAL_PHASES.contains(phase);
     }
 
     boolean failed() {

@@ -70,6 +70,11 @@ public final class ReleasePlanReconciler implements Reconciler<ReleasePlan>, Cle
             resource,
             runtime.acceptedPolicies(resource, context),
             runtime.observeRollout(resource, context));
+    if (plan.stopCandidateTraffic()) {
+      // Performed before the status write so a crash retries the traffic stop instead of
+      // recording a failed release that is still serving.
+      runtime.stopCandidateTraffic(resource, context);
+    }
     if (plan.hasDesiredResources()) {
       runtime.apply(plan.desiredResources(), context);
     }

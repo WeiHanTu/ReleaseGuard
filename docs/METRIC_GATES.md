@@ -47,6 +47,24 @@ Each metric delays its first measurement by one policy window, because a measure
 
 Argo resolves the template's token argument from the same-namespace Secret when it starts a run, so a release namespace without that Secret fails the run closed and aborts the candidate instead of promoting it.
 
+## Bootstrap evaluation
+
+A first generation has no stable revision, so Argo skips its canary steps and no generated step can gate it. ReleaseGuard therefore creates the evaluation itself as `<release>-bootstrap-g<generation>`, an owned AnalysisRun carrying the same policy-versioned metrics filtered to gates with an absolute canary threshold, `mode=Bootstrap`, an empty stable revision, and the observed pod-template hash. A plan whose gates are all baseline-only cannot bootstrap and is refused rather than evaluated against a fabricated baseline.
+
+The run is created only after Argo reports a healthy, fully promoted revision whose stable Service selector matches it with ready endpoints, so readiness is asserted from the traffic path rather than from Rollout status alone.
+
+| Bootstrap AnalysisRun | `ReleasePlan` phase | Effect |
+|---|---|---|
+| not created (workload not ready) | `Bootstrapping` | waiting for ready stable endpoints |
+| `Running` | `Bootstrapping` | the absolute gate is measuring |
+| `Successful` | `Succeeded` | the candidate becomes the first stable revision |
+| `Failed` | `Failed` | the generated Rollout is scaled to zero; no rollback is claimed |
+| `Inconclusive` or `Error` | `Bootstrapping` with `Degraded=True` | unadmitted; never promoted, never rolled back |
+
+A provider error during bootstrap is treated as missing evidence rather than a breached threshold, which differs from a canary step where Argo itself aborts on error. During bootstrap the decision belongs to ReleaseGuard, and losing the metric path is not a reason to tear down a first deployment.
+
+An unadmitted release needs a human. Until `RetryAnalysis` exists as a `ReleaseAction`, deleting the terminal bootstrap AnalysisRun makes the operator schedule an identical one on its next reconciliation, and correcting the plan or the policy starts a new generation with a new run.
+
 ## Run and verify
 
 ```bash

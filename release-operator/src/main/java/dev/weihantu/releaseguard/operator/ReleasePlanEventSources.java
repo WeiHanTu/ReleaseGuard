@@ -20,6 +20,8 @@ final class ReleasePlanEventSources {
       ReleaseResourceRenderer.MANAGED_BY_LABEL + "=releaseguard";
   private static final GroupVersionKind ROLLOUT_GVK =
       new GroupVersionKind("argoproj.io", "v1alpha1", "Rollout");
+  private static final GroupVersionKind ANALYSIS_RUN_GVK =
+      new GroupVersionKind("argoproj.io", "v1alpha1", "AnalysisRun");
 
   private ReleasePlanEventSources() {}
 
@@ -27,6 +29,15 @@ final class ReleasePlanEventSources {
     var rolloutConfiguration =
         InformerEventSourceConfiguration.from(ROLLOUT_GVK, ReleasePlan.class)
             .withName("argo-rollout-events")
+            .withNamespacesInheritedFromController()
+            .withLabelSelector(MANAGED_SELECTOR)
+            .withSecondaryToPrimaryMapper(ReleasePlanEventSources::primaryResourceIDs)
+            .build();
+    // ReleaseGuard-owned bootstrap runs carry the managed-by label; the step runs Argo creates for
+    // canary analysis do not, and reach the reconciler through Rollout status instead.
+    var analysisRunConfiguration =
+        InformerEventSourceConfiguration.from(ANALYSIS_RUN_GVK, ReleasePlan.class)
+            .withName("argo-analysis-run-events")
             .withNamespacesInheritedFromController()
             .withLabelSelector(MANAGED_SELECTOR)
             .withSecondaryToPrimaryMapper(ReleasePlanEventSources::primaryResourceIDs)
@@ -49,6 +60,8 @@ final class ReleasePlanEventSources {
     return List.of(
         new InformerEventSource<GenericKubernetesResource, ReleasePlan>(
             rolloutConfiguration, context),
+        new InformerEventSource<GenericKubernetesResource, ReleasePlan>(
+            analysisRunConfiguration, context),
         new InformerEventSource<Service, ReleasePlan>(serviceConfiguration, context),
         new InformerEventSource<Ingress, ReleasePlan>(ingressConfiguration, context));
   }

@@ -35,6 +35,7 @@ public final class ReleaseResourceRenderer {
   private static final String STABLE_REVISION_ARG = "stable-revision";
   private static final String CANARY_REVISION_ARG = "canary-revision";
   private static final String CANARY_MODE = "Canary";
+  private static final String BOOTSTRAP_MODE = "Bootstrap";
   private static final int TERMINAL_WEIGHT = 100;
   private static final long ARGO_DEFAULT_PROGRESS_DEADLINE_SECONDS = 600L;
   private static final long PROGRESS_DEADLINE_SLACK_SECONDS = 300L;
@@ -90,26 +91,12 @@ public final class ReleaseResourceRenderer {
     }
 
     List<Map<String, Object>> args = new ArrayList<>();
-    args.add(
-        Map.of(
-            "name",
-            AUTHORIZATION_TOKEN_ARG,
-            "valueFrom",
-            Map.of(
-                "secretKeyRef",
-                Map.of(
-                    "name",
-                    analysisConfiguration.authSecretName(),
-                    "key",
-                    analysisConfiguration.authSecretKey()))));
-    args.add(Map.of("name", "step"));
-    args.add(Map.of("name", "mode"));
-    args.add(Map.of("name", "stable-revision"));
-    args.add(Map.of("name", "canary-revision"));
-    POLICY_TEMPLATE_ARGS.forEach(
-        argument ->
-            args.add(
-                Map.of("name", argument.getValue(), "value", "{{" + argument.getKey() + "}}")));
+    args.add(authorizationTokenArgument());
+    args.add(Map.of("name", STEP_ARG));
+    args.add(Map.of("name", MODE_ARG));
+    args.add(Map.of("name", STABLE_REVISION_ARG));
+    args.add(Map.of("name", CANARY_REVISION_ARG));
+    args.addAll(policyPlaceholderArguments());
 
     Map<String, Object> templateSpec = new LinkedHashMap<>();
     templateSpec.put("args", List.copyOf(args));
@@ -119,6 +106,85 @@ public final class ReleaseResourceRenderer {
         "AnalysisTemplate",
         metadata(identity, analysisTemplateName(identity)),
         templateSpec);
+  }
+
+  /**
+   * Renders the bootstrap evaluation as a directly created AnalysisRun. Argo Rollouts skips canary
+   * steps while no stable revision exists, so a first generation has no step that could run the
+   * generated template, and RG-BOOT-002 still requires an administrator-approved absolute gate
+   * before the candidate becomes stable.
+   */
+  public List<HasMetadata> renderBootstrapAnalysis(
+      ReleasePlan plan,
+      Map<String, MetricPolicySnapshot> policySnapshots,
+      String candidateRevision) {
+    Identity identity = Identity.from(plan);
+    ReleasePlanSpec spec = Objects.requireNonNull(plan.getSpec(), "plan.spec");
+    Objects.requireNonNull(policySnapshots, "policySnapshots");
+    if (candidateRevision == null || candidateRevision.isBlank()) {
+      throw new IllegalArgumentException("bootstrap analysis requires an observed revision");
+    }
+
+    List<Map<String, Object>> metrics = new ArrayList<>();
+    List<ReleasePlanSpec.Gate> gates = spec.rollout().gates();
+    for (int index = 0; index < gates.size(); index++) {
+      ReleasePlanSpec.Gate gate = gates.get(index);
+      if (gate.maxCanaryValue() == null) {
+        // RG-GATE-011: a baseline-only gate has no meaning without a stable revision.
+        continue;
+      }
+      MetricPolicySnapshot snapshot = policySnapshots.get(gate.policyRef());
+      if (snapshot == null) {
+        throw new IllegalArgumentException(
+            "accepted policy snapshot is missing for " + gate.policyRef());
+      }
+      metrics.add(analysisMetric(identity, gate, snapshot, index));
+    }
+    if (metrics.isEmpty()) {
+      throw new IllegalArgumentException("bootstrap analysis requires one absolute canary gate");
+    }
+
+    List<Map<String, Object>> args = new ArrayList<>();
+    args.add(authorizationTokenArgument());
+    args.add(Map.of("name", STEP_ARG, "value", "0"));
+    args.add(Map.of("name", MODE_ARG, "value", BOOTSTRAP_MODE));
+    // RG-GATE-011: bootstrap must not fabricate or reuse a baseline.
+    args.add(Map.of("name", STABLE_REVISION_ARG, "value", ""));
+    args.add(Map.of("name", CANARY_REVISION_ARG, "value", candidateRevision));
+    args.addAll(policyPlaceholderArguments());
+
+    Map<String, Object> runSpec = new LinkedHashMap<>();
+    runSpec.put("args", List.copyOf(args));
+    runSpec.put("metrics", List.copyOf(metrics));
+    return List.of(
+        resource(
+            ANALYSIS_API_VERSION,
+            "AnalysisRun",
+            metadata(identity, bootstrapAnalysisName(identity)),
+            runSpec));
+  }
+
+  private Map<String, Object> authorizationTokenArgument() {
+    return Map.of(
+        "name",
+        AUTHORIZATION_TOKEN_ARG,
+        "valueFrom",
+        Map.of(
+            "secretKeyRef",
+            Map.of(
+                "name",
+                analysisConfiguration.authSecretName(),
+                "key",
+                analysisConfiguration.authSecretKey())));
+  }
+
+  private static List<Map<String, Object>> policyPlaceholderArguments() {
+    return POLICY_TEMPLATE_ARGS.stream()
+        .map(
+            argument ->
+                Map.<String, Object>of(
+                    "name", argument.getValue(), "value", "{{" + argument.getKey() + "}}"))
+        .toList();
   }
 
   private Map<String, Object> analysisMetric(
@@ -258,6 +324,10 @@ public final class ReleaseResourceRenderer {
 
   static String analysisTemplateName(Identity identity) {
     return identity.name() + "-gates-g" + identity.generation();
+  }
+
+  static String bootstrapAnalysisName(Identity identity) {
+    return identity.name() + "-bootstrap-g" + identity.generation();
   }
 
   private static GenericKubernetesResource service(

@@ -18,6 +18,8 @@ interface ReconciliationRuntime {
 
   void requestAbort(ReleasePlan plan, Context<ReleasePlan> context);
 
+  void stopCandidateTraffic(ReleasePlan plan, Context<ReleasePlan> context);
+
   void deleteManagedChildren(ReleasePlan plan, Context<ReleasePlan> context);
 
   void orphanStableResources(ReleasePlan plan, Context<ReleasePlan> context);

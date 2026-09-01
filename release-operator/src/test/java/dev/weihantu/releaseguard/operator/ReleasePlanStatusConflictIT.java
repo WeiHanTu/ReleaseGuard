@@ -88,6 +88,31 @@ class ReleasePlanStatusConflictIT {
                 x-kubernetes-preserve-unknown-fields: true
       """;
 
+  private static final String ANALYSIS_RUN_CRD =
+      """
+      apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      metadata:
+        name: analysisruns.argoproj.io
+      spec:
+        group: argoproj.io
+        scope: Namespaced
+        names:
+          plural: analysisruns
+          singular: analysisrun
+          kind: AnalysisRun
+        versions:
+          - name: v1alpha1
+            served: true
+            storage: true
+            subresources:
+              status: {}
+            schema:
+              openAPIV3Schema:
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+      """;
+
   static KubernetesClient client;
 
   /** Covers RG-REC-001 and RG-REC-003 against a real kube-apiserver. */
@@ -205,6 +230,10 @@ class ReleasePlanStatusConflictIT {
         .forEach(resource -> client.resource(resource).serverSideApply());
     client
         .load(new ByteArrayInputStream(ANALYSIS_TEMPLATE_CRD.getBytes(StandardCharsets.UTF_8)))
+        .items()
+        .forEach(resource -> client.resource(resource).serverSideApply());
+    client
+        .load(new ByteArrayInputStream(ANALYSIS_RUN_CRD.getBytes(StandardCharsets.UTF_8)))
         .items()
         .forEach(resource -> client.resource(resource).serverSideApply());
   }
@@ -332,6 +361,11 @@ class ReleasePlanStatusConflictIT {
     @Override
     public void requestAbort(ReleasePlan plan, Context<ReleasePlan> context) {
       delegate.requestAbort(plan, context);
+    }
+
+    @Override
+    public void stopCandidateTraffic(ReleasePlan plan, Context<ReleasePlan> context) {
+      delegate.stopCandidateTraffic(plan, context);
     }
 
     @Override

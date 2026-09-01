@@ -2,7 +2,7 @@
 
 ReleaseGuard is an implementation-in-progress GitOps progressive-delivery control plane for Kubernetes. Its target workflow lets developers describe a rollout declaratively, reconcile that desired state through a Java operator, evaluate canaries against Prometheus metrics, and retain an auditable deployment-event history in Kafka.
 
-> **Status:** Weeks 1-3, the deployable Week 4 metric-gate service, generation-scoped Argo AnalysisTemplate rendering, and gate-driven canary steps are implemented. A live gated rollout against real canary traffic and a running Prometheus server has not been executed, and bootstrap gate handling, rollback deadlines, operator actions, external audit services, and production operations are not implemented yet. No production-readiness claim is made.
+> **Status:** Weeks 1-3, the deployable Week 4 metric-gate service, generation-scoped Argo AnalysisTemplate rendering, gate-driven canary steps, and gated bootstrap admission are implemented. A live gated rollout against real canary traffic and a running Prometheus server has not been executed, and rollback deadlines, operator actions, external audit services, and production operations are not implemented yet. No production-readiness claim is made.
 
 ## Implemented
 
@@ -23,6 +23,8 @@ ReleaseGuard is an implementation-in-progress GitOps progressive-delivery contro
 - Gate-driven canary steps: every nonterminal step renders `setWeight` followed by a blocking `analysis` step that names the release generation's AnalysisTemplate and passes the step index, canary mode, and Argo stable/latest pod-template hashes, while weight 100 stays a bare promotion step reachable only through the preceding gates.
 - A checked observation budget: each metric delays its first measurement by one policy window, declares no measurement count so promotion needs an explicit consecutive-success streak, bounds consecutive transport errors, and runs under a progress deadline derived from the longest declared step; plans whose step duration cannot contain `window + (max(failureLimit, consecutiveSuccesses, inconclusiveLimit) - 1) x interval` are rejected as `RG-ROLL-004` errors.
 - Status projection of Argo outcomes into `Succeeded`, `Paused` on an inconclusive-analysis pause condition, and `RollingBack` followed by `RolledBack` only after observed zero canary ingress weight and ready stable endpoints, with the AnalysisRun name and verdict recorded as `status.lastGateDecision` and surfaced through the `GateHealthy` condition.
+- Gated bootstrap admission: Argo skips canary steps for a first generation, so the operator creates its own generation-scoped `AnalysisRun` in `Bootstrap` mode from the absolute-threshold gates, only after the stable Service has ready endpoints behind the promoted revision. A passed gate records the first stable revision, a breached threshold fails the release and scales the candidate to zero without claiming rollback, and inconclusive or unavailable evidence leaves it unadmitted and degraded.
+- An informer that maps ReleaseGuard-owned analysis runs back to their plan, and finalization that removes both ReleaseGuard-owned and Rollout-owned analysis children, including on `OrphanStable` where the Rollout is deleted without cascading.
 - A lightweight Kubernetes API-server test proving repeated apply does not duplicate resources.
 - A bounded cleanup finalizer that requests Argo abort, verifies controller acknowledgment, stable ready endpoints, and zero canary ingress weight, then either deletes every child or conflict-resiliently retains a controller-independent stable ReplicaSet, Service, and Ingress.
 - Eight-attempt exponential retry for reconciliation and configurable cleanup timing through `RELEASEGUARD_CLEANUP_DEADLINE` (default `60s`) and `RELEASEGUARD_CLEANUP_REQUEUE_INTERVAL` (default `1s`).
@@ -60,7 +62,7 @@ Run the live Argo finalizer scenario with Docker and `kubectl` available:
 ```
 
 This test runs the real Argo Rollouts controller but neither ingress-nginx nor Prometheus, so it verifies control-plane state, ready endpoints, and generated Ingress weights rather than request routing or metric-driven progression.
-Because bootstrap gate handling is not implemented, the test explicitly patches the bootstrap phase to `Succeeded` before creating its second `ReleasePlan` generation; it does not claim automated promotion.
+The test deploys no metric-gate service, so the generated bootstrap AnalysisRun cannot reach a verdict; it asserts that the run exists in `Bootstrap` mode with no baseline, then explicitly patches the bootstrap phase to `Succeeded` before creating its second `ReleasePlan` generation. It does not claim automated promotion.
 Every release namespace needs the metric-gate token Secret before a canary step runs: Argo resolves that reference when it starts an AnalysisRun, and a missing Secret fails the run closed rather than promoting.
 
 Build and run the offline CLI:

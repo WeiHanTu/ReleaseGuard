@@ -3,8 +3,10 @@ package dev.weihantu.releaseguard.operator;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanSpec;
 import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
 import io.fabric8.kubernetes.api.model.HasMetadata;
 import java.util.LinkedHashMap;
@@ -222,6 +224,88 @@ class ReleaseResourceRendererTest {
     assertEquals(
         OperatorTestFixtures.policy().sampleCountQueryTemplate(),
         policySpec.get("sampleCountQueryTemplate"));
+  }
+
+  @Test
+  void bootstrapAnalysisRunEvaluatesAbsoluteGatesWithoutABaseline() {
+    GenericKubernetesResource run =
+        assertInstanceOf(
+            GenericKubernetesResource.class,
+            renderer
+                .renderBootstrapAnalysis(
+                    OperatorTestFixtures.plan(9), OperatorTestFixtures.policies(), "candidate-hash")
+                .getFirst());
+
+    assertEquals("AnalysisRun", run.getKind());
+    assertEquals("checkout-bootstrap-g9", run.getMetadata().getName());
+    assertEquals(
+        OperatorTestFixtures.UID, run.getMetadata().getOwnerReferences().getFirst().getUid());
+
+    Map<?, ?> spec = map(run.getAdditionalProperties().get("spec"));
+    Map<String, Object> arguments = new LinkedHashMap<>();
+    for (Object argument : list(spec.get("args"))) {
+      Map<?, ?> entry = map(argument);
+      arguments.put(entry.get("name").toString(), entry.get("value"));
+    }
+    assertEquals("0", arguments.get("step"));
+    assertEquals("Bootstrap", arguments.get("mode"));
+    assertEquals("", arguments.get("stable-revision"), "bootstrap must not carry a baseline");
+    assertEquals("candidate-hash", arguments.get("canary-revision"));
+    Map<?, ?> tokenArgument = map(list(spec.get("args")).getFirst());
+    assertEquals("authorization-token", tokenArgument.get("name"));
+    assertFalse(tokenArgument.containsKey("value"));
+
+    List<?> metrics = list(spec.get("metrics"));
+    assertEquals(1, metrics.size());
+    Map<?, ?> metric = map(metrics.getFirst());
+    assertEquals("gate-0-http-errors", metric.get("name"));
+    assertEquals(OperatorTestFixtures.policy().window(), metric.get("initialDelay"));
+    Map<?, ?> body = map(map(map(metric.get("provider")).get("web")).get("jsonBody"));
+    assertEquals("{{ args.mode }}", body.get("mode"));
+    assertEquals("817263", map(body.get("policy")).get("resourceVersion"));
+  }
+
+  @Test
+  void bootstrapAnalysisSkipsBaselineOnlyGatesAndRefusesWithoutAnAbsoluteOne() {
+    var mixed = OperatorTestFixtures.plan(9);
+    mixed.setSpec(
+        withGates(
+            mixed.getSpec(),
+            List.of(
+                new ReleasePlanSpec.Gate("http-errors", 0.01, 0.005, 3, 2, 3),
+                new ReleasePlanSpec.Gate("http-errors", null, 0.005, 3, 2, 3))));
+
+    GenericKubernetesResource run =
+        assertInstanceOf(
+            GenericKubernetesResource.class,
+            renderer
+                .renderBootstrapAnalysis(mixed, OperatorTestFixtures.policies(), "candidate-hash")
+                .getFirst());
+    List<?> metrics = list(map(run.getAdditionalProperties().get("spec")).get("metrics"));
+    assertEquals(1, metrics.size());
+    assertEquals("gate-0-http-errors", map(metrics.getFirst()).get("name"));
+
+    var baselineOnly = OperatorTestFixtures.plan(9);
+    baselineOnly.setSpec(
+        withGates(
+            baselineOnly.getSpec(),
+            List.of(new ReleasePlanSpec.Gate("http-errors", null, 0.005, 3, 2, 3))));
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            renderer.renderBootstrapAnalysis(
+                baselineOnly, OperatorTestFixtures.policies(), "candidate-hash"));
+  }
+
+  private static ReleasePlanSpec withGates(
+      ReleasePlanSpec source, List<ReleasePlanSpec.Gate> gates) {
+    return new ReleasePlanSpec(
+        source.workload(),
+        source.network(),
+        new ReleasePlanSpec.Rollout(source.rollout().steps(), gates),
+        source.failurePolicy(),
+        source.deletionPolicy());
   }
 
   private static Map<?, ?> map(Object value) {

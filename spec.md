@@ -470,6 +470,9 @@ The first accepted generation has no stable baseline.
 - `RG-BOOT-002`: Bootstrap MUST require pod readiness and at least one administrator-approved absolute metric gate before becoming stable.
 - `RG-BOOT-003`: A failed bootstrap readiness or absolute gate MUST stop candidate traffic and enter `Failed`; it MUST NOT claim rollback.
 - `RG-BOOT-004`: Successful bootstrap MUST record the first stable revision and emit `release.bootstrapped`.
+- `RG-BOOT-005`: Bootstrap evidence MUST come from an evaluation ReleaseGuard schedules itself, because Argo Rollouts skips canary steps while no stable revision exists.
+- `RG-BOOT-006`: Inconclusive or unavailable bootstrap evidence MUST leave the release unadmitted and MUST NOT be reported as a failed gate, a promotion, or a rollback.
+- `RG-BOOT-007`: Stopping bootstrap candidate traffic MUST remove the candidate's serving endpoints and MUST remain reversible by a corrected generation.
 
 ### 12.4 Deletion and finalizers
 

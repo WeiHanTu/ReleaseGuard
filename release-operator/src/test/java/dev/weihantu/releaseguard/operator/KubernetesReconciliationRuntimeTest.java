@@ -115,7 +115,8 @@ class KubernetesReconciliationRuntimeTest {
                     Map.of("name", "checkout-candidate-1", "status", "Inconclusive"))));
 
     RolloutObservation observation =
-        KubernetesReconciliationRuntime.rolloutObservation(rollout, RolloutObservation.Abort.NONE);
+        KubernetesReconciliationRuntime.rolloutObservation(
+            rollout, false, RolloutObservation.Abort.NONE, RolloutObservation.StepAnalysis.NONE);
 
     assertTrue(observation.present());
     assertTrue(observation.statusCurrent());
@@ -132,7 +133,9 @@ class KubernetesReconciliationRuntimeTest {
     RolloutObservation stale =
         KubernetesReconciliationRuntime.rolloutObservation(
             rollout(5L, Map.of("observedGeneration", "4", "phase", "Progressing")),
-            RolloutObservation.Abort.NONE);
+            false,
+            RolloutObservation.Abort.NONE,
+            RolloutObservation.StepAnalysis.NONE);
 
     assertFalse(stale.statusCurrent());
     assertFalse(stale.pausedByInconclusiveGate());
@@ -157,18 +160,69 @@ class KubernetesReconciliationRuntimeTest {
                     "candidate-hash",
                     "currentPodHash",
                     "candidate-hash")),
-            RolloutObservation.Abort.NONE);
+            true,
+            RolloutObservation.Abort.NONE,
+            RolloutObservation.StepAnalysis.NONE);
 
     assertTrue(promoted.promoted(5));
     assertFalse(promoted.promoted(6));
+    assertTrue(promoted.bootstrapWorkloadReady());
   }
 
   @Test
   void rollbackIsCompleteOnlyWhenBothTrafficPathsAreObserved() {
-    assertFalse(new RolloutObservation.Abort(true, true, true, false).restored());
-    assertFalse(new RolloutObservation.Abort(true, true, false, true).restored());
-    assertFalse(new RolloutObservation.Abort(true, false, true, true).restored());
-    assertTrue(new RolloutObservation.Abort(true, true, true, true).restored());
+    assertFalse(rollback(new RolloutObservation.Abort(true, true, true), false));
+    assertFalse(rollback(new RolloutObservation.Abort(true, true, false), true));
+    assertFalse(rollback(new RolloutObservation.Abort(true, false, true), true));
+    assertTrue(rollback(new RolloutObservation.Abort(true, true, true), true));
+  }
+
+  @Test
+  void bootstrapReadinessRequiresObservedStableEndpoints() {
+    Map<String, Object> healthy =
+        Map.of(
+            "observedGeneration",
+            "6",
+            "phase",
+            "Healthy",
+            "stableRS",
+            "candidate-hash",
+            "currentPodHash",
+            "candidate-hash");
+
+    assertFalse(
+        KubernetesReconciliationRuntime.rolloutObservation(
+                rollout(6L, healthy),
+                false,
+                RolloutObservation.Abort.NONE,
+                RolloutObservation.StepAnalysis.NONE)
+            .bootstrapWorkloadReady());
+    assertTrue(
+        KubernetesReconciliationRuntime.rolloutObservation(
+                rollout(6L, healthy),
+                true,
+                RolloutObservation.Abort.NONE,
+                RolloutObservation.StepAnalysis.NONE)
+            .bootstrapWorkloadReady());
+  }
+
+  private static boolean rollback(RolloutObservation.Abort abort, boolean stableTrafficReady) {
+    return KubernetesReconciliationRuntime.rolloutObservation(
+            rollout(
+                7L,
+                Map.of(
+                    "observedGeneration",
+                    "7",
+                    "phase",
+                    "Degraded",
+                    "stableRS",
+                    "stable-hash",
+                    "currentPodHash",
+                    "candidate-hash")),
+            stableTrafficReady,
+            abort,
+            RolloutObservation.StepAnalysis.NONE)
+        .rollbackComplete();
   }
 
   private static GenericKubernetesResource rollout(long generation, Map<String, Object> status) {

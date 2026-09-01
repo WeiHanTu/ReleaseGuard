@@ -170,9 +170,9 @@ assert_detached() {
 
 start_candidate_release() {
   local marker="$1"
-  # Bootstrap gate handling is not implemented yet, so the first generation never leaves
-  # Bootstrapping on its own. Simulate that pending result here to exercise a real second
-  # ReleasePlan generation rather than mutate a child resource.
+  # This cluster deliberately runs no metric-gate service, so the bootstrap AnalysisRun cannot
+  # reach a verdict. Simulate the admitted bootstrap here to exercise a real second ReleasePlan
+  # generation rather than mutate a child resource.
   ${KUBECTL_BIN} -n "${TEST_NAMESPACE}" patch releaseplan checkout \
     --subresource=status --type=merge -p '{"status":{"phase":"Succeeded"}}' >/dev/null
   wait_for_value releaseplan/checkout '{.status.phase}' Succeeded 30
@@ -273,6 +273,24 @@ stable_revision="$(wait_for_nonempty rollout/checkout '{.status.stableRS}' 30)"
 wait_for_nonempty endpoints/checkout-stable '{.subsets[0].addresses[0].ip}' 60 >/dev/null
 wait_for_value releaseplan/checkout \
   '{.status.stableRevision}' "checkout-${stable_revision}" 60
+
+log "Verifying the bootstrap release is gated instead of admitted on readiness alone"
+bootstrap_generation="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get releaseplan checkout \
+  -o jsonpath='{.metadata.generation}')"
+bootstrap_run="checkout-bootstrap-g${bootstrap_generation}"
+${KUBECTL_BIN} -n "${TEST_NAMESPACE}" wait --for=create "analysisrun/${bootstrap_run}" --timeout=90s
+bootstrap_mode="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get "analysisrun/${bootstrap_run}" \
+  -o jsonpath='{.spec.args[?(@.name=="mode")].value}')"
+bootstrap_baseline="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get "analysisrun/${bootstrap_run}" \
+  -o jsonpath='{.spec.args[?(@.name=="stable-revision")].value}')"
+[[ "${bootstrap_mode}" == "Bootstrap" ]]
+[[ -z "${bootstrap_baseline}" ]]
+bootstrap_phase_before_verdict="$(${KUBECTL_BIN} -n "${TEST_NAMESPACE}" get releaseplan checkout \
+  -o jsonpath='{.status.phase}')"
+if [[ "${bootstrap_phase_before_verdict}" != "Bootstrapping" ]]; then
+  echo "Bootstrap release left Bootstrapping without a gate verdict" >&2
+  exit 1
+fi
 
 log "Starting a candidate ReleasePlan generation and holding the first gated canary step"
 start_candidate_release candidate
@@ -434,6 +452,10 @@ delete_stable_revision=${delete_stable_revision}
 delete_candidate_revision=${candidate_revision}
 releaseplan_phase_at_canary=${delete_releaseplan_phase}
 releaseplan_current_step_at_canary=${delete_releaseplan_step}
+bootstrap_analysis_run=${bootstrap_run}
+bootstrap_analysis_mode=${bootstrap_mode}
+bootstrap_baseline_supplied=false
+releaseplan_phase_before_bootstrap_verdict=${bootstrap_phase_before_verdict}
 step_analysis_run=${delete_analysis_run}
 orphan_step_analysis_run=${orphan_analysis_run}
 child_event_sources=Rollout,Service,Ingress

@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanStatus;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanStatus.Phase;
 import dev.weihantu.releaseguard.api.validation.ReleasePlanValidator;
+import io.fabric8.kubernetes.api.model.HasMetadata;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -141,7 +142,7 @@ class ReleasePlanPlannerTest {
   }
 
   @Test
-  void bootstrapRecordsReadyStableRevisionWithoutClaimingGateSuccess() {
+  void bootstrapWithoutObservedStableEndpointsDoesNotStartItsGate() {
     var plan = OperatorTestFixtures.plan(8);
     plan.setStatus(activeStatus(8, Phase.Bootstrapping, null));
     RolloutObservation observation =
@@ -153,7 +154,99 @@ class ReleasePlanPlannerTest {
     assertEquals(2, result.status().currentStep());
     assertEquals("checkout-stable-hash", result.status().stableRevision());
     assertNull(result.status().canaryRevision());
-    assertEquals("BootstrapReadyAwaitingGate", conditionReason(result.status(), "Ready"));
+    assertEquals("BootstrapWorkloadPending", conditionReason(result.status(), "Ready"));
+    assertEquals(5, result.desiredResources().size());
+  }
+
+  @Test
+  void readyBootstrapCandidateGainsAnAbsoluteGateArgoCannotSchedule() {
+    var plan = OperatorTestFixtures.plan(19);
+    plan.setStatus(activeStatus(19, Phase.Bootstrapping, null));
+
+    ReconciliationPlan result =
+        planner.plan(
+            plan,
+            OperatorTestFixtures.policies(),
+            bootstrapping("stable-hash", true, RolloutObservation.StepAnalysis.NONE));
+
+    assertEquals(Phase.Bootstrapping, result.status().phase());
+    assertEquals("BootstrapGateStarting", conditionReason(result.status(), "Ready"));
+    assertEquals(6, result.desiredResources().size());
+    HasMetadata bootstrapRun = result.desiredResources().getLast();
+    assertEquals("AnalysisRun", bootstrapRun.getKind());
+    assertEquals("checkout-bootstrap-g19", bootstrapRun.getMetadata().getName());
+    assertFalse(result.stopCandidateTraffic());
+  }
+
+  @Test
+  void passedBootstrapGateRecordsTheFirstStableRevision() {
+    var plan = OperatorTestFixtures.plan(20);
+    plan.setStatus(activeStatus(20, Phase.Bootstrapping, null));
+
+    ReconciliationPlan result =
+        planner.plan(
+            plan,
+            OperatorTestFixtures.policies(),
+            bootstrapping(
+                "stable-hash",
+                true,
+                new RolloutObservation.StepAnalysis("checkout-bootstrap-g20", "Successful")));
+
+    assertEquals(Phase.Succeeded, result.status().phase());
+    assertEquals("BootstrapGatePassed", conditionReason(result.status(), "Ready"));
+    assertEquals("checkout-stable-hash", result.status().stableRevision());
+    assertNull(result.status().canaryRevision());
+    assertEquals(
+        new ReleasePlanStatus.GateDecision(
+            "Successful", "AnalysisRun/checkout-bootstrap-g20", "2026-08-29T12:00:00Z"),
+        result.status().lastGateDecision());
+    assertEquals("True", conditionStatus(result.status(), "GateHealthy"));
+    assertFalse(result.stopCandidateTraffic());
+    assertEquals(5, result.desiredResources().size());
+  }
+
+  @Test
+  void failedBootstrapGateStopsCandidateTrafficWithoutClaimingRollback() {
+    var plan = OperatorTestFixtures.plan(21);
+    plan.setStatus(activeStatus(21, Phase.Bootstrapping, null));
+
+    ReconciliationPlan result =
+        planner.plan(
+            plan,
+            OperatorTestFixtures.policies(),
+            bootstrapping(
+                "stable-hash",
+                true,
+                new RolloutObservation.StepAnalysis("checkout-bootstrap-g21", "Failed")));
+
+    assertEquals(Phase.Failed, result.status().phase());
+    assertEquals("BootstrapGateFailed", conditionReason(result.status(), "Ready"));
+    assertTrue(result.stopCandidateTraffic());
+    assertFalse(result.hasDesiredResources());
+    assertEquals("False", conditionStatus(result.status(), "GateHealthy"));
+  }
+
+  @Test
+  void inconclusiveBootstrapEvidenceLeavesTheCandidateUnadmitted() {
+    var plan = OperatorTestFixtures.plan(22);
+    plan.setStatus(activeStatus(22, Phase.Bootstrapping, null));
+
+    ReconciliationPlan result =
+        planner.plan(
+            plan,
+            OperatorTestFixtures.policies(),
+            bootstrapping(
+                "stable-hash",
+                true,
+                new RolloutObservation.StepAnalysis("checkout-bootstrap-g22", "Inconclusive")));
+
+    assertEquals(Phase.Bootstrapping, result.status().phase());
+    assertEquals("BootstrapGateInconclusive", conditionReason(result.status(), "Ready"));
+    assertEquals("True", conditionStatus(result.status(), "Degraded"));
+    assertEquals("Unknown", conditionStatus(result.status(), "GateHealthy"));
+    assertEquals("Inconclusive", result.status().lastGateDecision().decision());
+    assertFalse(result.stopCandidateTraffic());
+    assertEquals(5, result.desiredResources().size());
   }
 
   @Test
@@ -282,9 +375,10 @@ class ReleasePlanPlannerTest {
                 0,
                 "stable",
                 "candidate",
-                new RolloutObservation.Abort(true, true, false, false),
+                new RolloutObservation.Abort(true, true, false),
                 List.of(),
-                failedGate));
+                failedGate,
+                false));
 
     assertEquals(Phase.RollingBack, rollingBack.status().phase());
     assertEquals("GateFailedRollback", conditionReason(rollingBack.status(), "Ready"));
@@ -301,9 +395,10 @@ class ReleasePlanPlannerTest {
                 0,
                 "stable",
                 "candidate",
-                new RolloutObservation.Abort(true, true, true, false),
+                new RolloutObservation.Abort(true, true, true),
                 List.of(),
-                failedGate));
+                failedGate,
+                false));
 
     assertEquals(Phase.RollingBack, stillRollingBack.status().phase());
 
@@ -317,9 +412,10 @@ class ReleasePlanPlannerTest {
                 0,
                 "stable",
                 "candidate",
-                new RolloutObservation.Abort(true, true, true, true),
+                new RolloutObservation.Abort(true, true, true),
                 List.of(),
-                failedGate));
+                failedGate,
+                true));
 
     assertEquals(Phase.RolledBack, rolledBack.status().phase());
     assertEquals("StableTrafficRestored", conditionReason(rolledBack.status(), "Ready"));
@@ -394,12 +490,14 @@ class ReleasePlanPlannerTest {
                 0,
                 null,
                 "candidate",
-                new RolloutObservation.Abort(true, true, true, true),
+                new RolloutObservation.Abort(true, true, true),
                 List.of(),
                 RolloutObservation.StepAnalysis.NONE));
 
     assertEquals(Phase.Failed, result.status().phase());
     assertEquals("BootstrapAborted", conditionReason(result.status(), "Ready"));
+    assertTrue(result.stopCandidateTraffic());
+    assertFalse(result.hasDesiredResources());
   }
 
   private static RolloutObservation gated(
@@ -410,6 +508,26 @@ class ReleasePlanPlannerTest {
       RolloutObservation.Abort abort,
       List<String> pauseReasons,
       RolloutObservation.StepAnalysis stepAnalysis) {
+    return gated(
+        argoPhase,
+        currentStepIndex,
+        stablePodHash,
+        currentPodHash,
+        abort,
+        pauseReasons,
+        stepAnalysis,
+        true);
+  }
+
+  private static RolloutObservation gated(
+      String argoPhase,
+      Integer currentStepIndex,
+      String stablePodHash,
+      String currentPodHash,
+      RolloutObservation.Abort abort,
+      List<String> pauseReasons,
+      RolloutObservation.StepAnalysis stepAnalysis,
+      boolean stableTrafficReady) {
     return new RolloutObservation(
         true,
         true,
@@ -419,9 +537,29 @@ class ReleasePlanPlannerTest {
         currentPodHash,
         10,
         10,
+        stableTrafficReady,
         abort,
         pauseReasons,
-        stepAnalysis);
+        stepAnalysis,
+        RolloutObservation.StepAnalysis.NONE);
+  }
+
+  private static RolloutObservation bootstrapping(
+      String podHash, boolean stableTrafficReady, RolloutObservation.StepAnalysis gate) {
+    return new RolloutObservation(
+        true,
+        true,
+        "Healthy",
+        null,
+        podHash,
+        podHash,
+        10,
+        10,
+        stableTrafficReady,
+        RolloutObservation.Abort.NONE,
+        List.of(),
+        RolloutObservation.StepAnalysis.NONE,
+        gate);
   }
 
   private static ReleasePlanStatus validatingStatus(long generation, String stableRevision) {

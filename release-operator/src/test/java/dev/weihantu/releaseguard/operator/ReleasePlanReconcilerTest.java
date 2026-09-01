@@ -43,11 +43,27 @@ class ReleasePlanReconcilerTest {
     assertEquals(5, runtime.applied.size());
 
     runtime.rolloutObservation =
-        new RolloutObservation(true, true, "Healthy", null, "stable-hash", "stable-hash", 2, 2);
+        new RolloutObservation(
+            true,
+            true,
+            "Healthy",
+            null,
+            "stable-hash",
+            "stable-hash",
+            2,
+            2,
+            true,
+            RolloutObservation.Abort.NONE,
+            List.of(),
+            RolloutObservation.StepAnalysis.NONE,
+            RolloutObservation.StepAnalysis.NONE);
     reconciler.reconcile(plan, null);
 
     assertEquals("checkout-stable-hash", plan.getStatus().stableRevision());
-    assertEquals("BootstrapReadyAwaitingGate", conditionReason(plan, "Ready"));
+    assertEquals("BootstrapGateStarting", conditionReason(plan, "Ready"));
+    assertEquals(6, runtime.applied.size());
+    assertEquals("AnalysisRun", runtime.applied.getLast().getKind());
+    assertEquals(0, runtime.trafficStops);
 
     int convergedStatusWrites = runtime.statusWrites;
     reconciler.reconcile(plan, null);
@@ -196,6 +212,7 @@ class ReleasePlanReconcilerTest {
         observation(false, false, false, false, true, false, false);
     private RolloutObservation rolloutObservation = RolloutObservation.missing();
     private int abortRequests;
+    private int trafficStops;
     private int deleteRequests;
     private int orphanRequests;
     private int statusWrites;
@@ -225,6 +242,11 @@ class ReleasePlanReconcilerTest {
     @Override
     public void requestAbort(ReleasePlan plan, Context<ReleasePlan> context) {
       abortRequests++;
+    }
+
+    @Override
+    public void stopCandidateTraffic(ReleasePlan plan, Context<ReleasePlan> context) {
+      trafficStops++;
     }
 
     @Override

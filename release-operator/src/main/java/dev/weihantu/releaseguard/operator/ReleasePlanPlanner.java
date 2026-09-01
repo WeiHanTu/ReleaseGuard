@@ -11,6 +11,7 @@ import dev.weihantu.releaseguard.api.validation.ValidationError;
 import dev.weihantu.releaseguard.api.validation.ValidationResult;
 import io.fabric8.kubernetes.api.model.Condition;
 import io.fabric8.kubernetes.api.model.ConditionBuilder;
+import io.fabric8.kubernetes.api.model.HasMetadata;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -139,7 +140,11 @@ public final class ReleasePlanPlanner {
     String stableRevision = current.stableRevision();
     String canaryRevision = current.canaryRevision();
     Integer currentStep = current.currentStep();
-    ReleasePlanStatus.GateDecision gateDecision = gateDecision(current, observation);
+    RolloutObservation.StepAnalysis gate =
+        currentPhase == Phase.Bootstrapping
+            ? observation.bootstrapAnalysis()
+            : observation.stepAnalysis();
+    ReleasePlanStatus.GateDecision gateDecision = gateDecision(current, observation, gate);
     String reason;
     String message;
 
@@ -156,6 +161,10 @@ public final class ReleasePlanPlanner {
       reason = observationReason(currentPhase, phase, observation, gateDecision);
       message = observationMessage(currentPhase, phase, observation, gateDecision);
     }
+    if (currentPhase == Phase.Bootstrapping && phase == Phase.Succeeded) {
+      // RG-BOOT-004: the admitted bootstrap candidate becomes the first stable revision.
+      canaryRevision = null;
+    }
 
     ReleasePlanStatus status =
         status(
@@ -170,8 +179,33 @@ public final class ReleasePlanPlanner {
             message);
     return new ReconciliationPlan(
         status,
-        renderer.render(plan, acceptedPolicies),
-        phase == Phase.RollingBack ? ROLLBACK_REQUEUE : null);
+        desiredResources(plan, acceptedPolicies, currentPhase, phase, observation),
+        phase == Phase.RollingBack ? ROLLBACK_REQUEUE : null,
+        currentPhase == Phase.Bootstrapping && phase == Phase.Failed);
+  }
+
+  /**
+   * A failed bootstrap stops asserting its workload so the candidate can be scaled to zero, and a
+   * ready bootstrap candidate gains the administrator-approved absolute gate Argo cannot schedule
+   * for it (RG-BOOT-002).
+   */
+  private List<HasMetadata> desiredResources(
+      ReleasePlan plan,
+      Map<String, MetricPolicySnapshot> acceptedPolicies,
+      Phase currentPhase,
+      Phase phase,
+      RolloutObservation observation) {
+    if (phase == Phase.Failed) {
+      return List.of();
+    }
+    List<HasMetadata> desired = new ArrayList<>(renderer.render(plan, acceptedPolicies));
+    if (currentPhase == Phase.Bootstrapping
+        && observation.bootstrapWorkloadReady()
+        && !observation.bootstrapAnalysis().decided()) {
+      desired.addAll(
+          renderer.renderBootstrapAnalysis(plan, acceptedPolicies, observation.currentPodHash()));
+    }
+    return List.copyOf(desired);
   }
 
   /**
@@ -180,15 +214,15 @@ public final class ReleasePlanPlanner {
    * produces an identical status (RG-REC-001).
    */
   private ReleasePlanStatus.GateDecision gateDecision(
-      ReleasePlanStatus current, RolloutObservation observation) {
+      ReleasePlanStatus current,
+      RolloutObservation observation,
+      RolloutObservation.StepAnalysis analysis) {
     ReleasePlanStatus.GateDecision previous = current.lastGateDecision();
-    if (!observation.present()
-        || !observation.statusCurrent()
-        || !observation.stepAnalysis().decided()) {
+    if (!observation.present() || !observation.statusCurrent() || !analysis.decided()) {
       return previous;
     }
-    String evidenceRef = "AnalysisRun/" + observation.stepAnalysis().name();
-    String decision = observation.stepAnalysis().phase();
+    String evidenceRef = "AnalysisRun/" + analysis.name();
+    String decision = analysis.phase();
     if (previous != null
         && evidenceRef.equals(previous.evidenceRef())
         && decision.equals(previous.decision())) {
@@ -220,7 +254,7 @@ public final class ReleasePlanPlanner {
       return currentPhase == Phase.Bootstrapping ? Phase.Failed : currentPhase;
     }
     if (currentPhase == Phase.Bootstrapping) {
-      return currentPhase;
+      return bootstrapPhase(observation);
     }
     if (observation.pausedByInconclusiveGate()
         || "Paused".equals(observation.argoPhase())
@@ -233,12 +267,28 @@ public final class ReleasePlanPlanner {
     return currentPhase;
   }
 
+  /**
+   * RG-BOOT-002 admits a bootstrap candidate only on a passed absolute gate. A breached threshold
+   * fails it closed, while inconclusive evidence or a provider error leaves it unadmitted rather
+   * than promoting or claiming a rollback it cannot perform.
+   */
+  private static Phase bootstrapPhase(RolloutObservation observation) {
+    RolloutObservation.StepAnalysis gate = observation.bootstrapAnalysis();
+    if (gate.successful()) {
+      return Phase.Succeeded;
+    }
+    if ("Failed".equals(gate.phase())) {
+      return Phase.Failed;
+    }
+    return Phase.Bootstrapping;
+  }
+
   private static Phase abortedPhase(Phase currentPhase, RolloutObservation observation) {
     if (currentPhase == Phase.Bootstrapping) {
       // RG-BOOT-003: a bootstrap has no baseline to restore, so it fails instead of rolling back.
       return Phase.Failed;
     }
-    if (currentPhase == Phase.RollingBack && observation.abort().restored()) {
+    if (currentPhase == Phase.RollingBack && observation.rollbackComplete()) {
       return Phase.RolledBack;
     }
     return Phase.RollingBack;
@@ -250,10 +300,24 @@ public final class ReleasePlanPlanner {
       RolloutObservation observation,
       ReleasePlanStatus.GateDecision gateDecision) {
     if (phase == Phase.Succeeded) {
+      if (currentPhase == Phase.Bootstrapping) {
+        return "BootstrapGatePassed";
+      }
       // Argo can be promoted by hand. Full traffic alone must not claim ReleaseGuard gate approval.
       return decided(gateDecision, "Successful")
           ? "GateApprovedPromotion"
           : "PromotionObservedWithoutGateEvidence";
+    }
+    if (phase == Phase.Failed && currentPhase == Phase.Bootstrapping) {
+      if (observation.abort().requested()) {
+        return "BootstrapAborted";
+      }
+      return "Failed".equals(observation.bootstrapAnalysis().phase())
+          ? "BootstrapGateFailed"
+          : "ArgoRolloutDegraded";
+    }
+    if (currentPhase == Phase.Bootstrapping) {
+      return bootstrapReason(observation);
     }
     if (phase == Phase.RolledBack) {
       return "StableTrafficRestored";
@@ -261,14 +325,8 @@ public final class ReleasePlanPlanner {
     if (phase == Phase.RollingBack) {
       return failedGate(observation, gateDecision) ? "GateFailedRollback" : "RolloutAbortObserved";
     }
-    if (phase == Phase.Failed && observation.abort().requested()) {
-      return "BootstrapAborted";
-    }
     if (observation.pausedByInconclusiveGate()) {
       return "GateInconclusivePause";
-    }
-    if (currentPhase == Phase.Bootstrapping && "Healthy".equals(observation.argoPhase())) {
-      return "BootstrapReadyAwaitingGate";
     }
     if ("Degraded".equals(observation.argoPhase())) {
       return "ArgoRolloutDegraded";
@@ -279,15 +337,49 @@ public final class ReleasePlanPlanner {
     return "ArgoRolloutObserved";
   }
 
+  private static String bootstrapReason(RolloutObservation observation) {
+    RolloutObservation.StepAnalysis gate = observation.bootstrapAnalysis();
+    if (gate.decided()) {
+      return "BootstrapGateInconclusive";
+    }
+    if (gate.created()) {
+      return "BootstrapGateRunning";
+    }
+    return observation.bootstrapWorkloadReady()
+        ? "BootstrapGateStarting"
+        : "BootstrapWorkloadPending";
+  }
+
+  private static String bootstrapMessage(String reason) {
+    return switch (reason) {
+      case "BootstrapGateInconclusive" ->
+          "Bootstrap metric evidence was inconclusive; the candidate is not admitted as stable";
+      case "BootstrapGateRunning" ->
+          "The administrator-approved absolute bootstrap gate is running";
+      case "BootstrapGateStarting" ->
+          "Stable endpoints are ready; starting the administrator-approved absolute bootstrap gate";
+      default -> "Waiting for a ready bootstrap workload before the absolute gate can run";
+    };
+  }
+
   private static String observationMessage(
       Phase currentPhase,
       Phase phase,
       RolloutObservation observation,
       ReleasePlanStatus.GateDecision gateDecision) {
     if (phase == Phase.Succeeded) {
+      if (currentPhase == Phase.Bootstrapping) {
+        return "The absolute bootstrap gate passed and the candidate became the stable revision";
+      }
       return decided(gateDecision, "Successful")
           ? "Every declared gate passed and Argo Rollouts promoted the candidate to full traffic"
           : "Argo Rollouts reached full traffic without an observed terminal gate decision";
+    }
+    if (phase == Phase.Failed && currentPhase == Phase.Bootstrapping) {
+      return "Bootstrap failed; candidate traffic is being stopped and no rollback is claimed";
+    }
+    if (currentPhase == Phase.Bootstrapping) {
+      return bootstrapMessage(bootstrapReason(observation));
     }
     if (phase == Phase.RolledBack) {
       return "Canary traffic is zero and the stable Service has ready endpoints";
@@ -299,9 +391,6 @@ public final class ReleasePlanPlanner {
     }
     if (observation.pausedByInconclusiveGate()) {
       return "Metric evidence was inconclusive; promotion requires an explicit operator action";
-    }
-    if (currentPhase == Phase.Bootstrapping && "Healthy".equals(observation.argoPhase())) {
-      return "Bootstrap workload is ready; administrator-approved metric evidence is still required";
     }
     return "Observed Argo Rollout phase " + observation.argoPhase();
   }
@@ -432,6 +521,7 @@ public final class ReleasePlanPlanner {
             phase == Phase.Failed
                     || phase == Phase.RollingBack
                     || "ArgoRolloutDegraded".equals(reason)
+                    || "BootstrapGateInconclusive".equals(reason)
                 ? "True"
                 : "False",
             generation,
@@ -454,13 +544,14 @@ public final class ReleasePlanPlanner {
     String value =
         switch (gateDecision.decision()) {
           case "Successful" -> "True";
-          case "Failed", "Error" -> "False";
+          case "Failed" -> "False";
           default -> "Unknown";
         };
     String reason =
         switch (gateDecision.decision()) {
           case "Successful" -> "GatePassed";
-          case "Failed", "Error" -> "GateFailed";
+          case "Failed" -> "GateFailed";
+          case "Error" -> "GateError";
           default -> "GateInconclusive";
         };
     return condition(

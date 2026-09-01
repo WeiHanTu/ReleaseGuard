@@ -5,6 +5,7 @@ import dev.weihantu.releaseguard.api.v1alpha1.MetricPolicySpec;
 import dev.weihantu.releaseguard.api.v1alpha1.MetricPolicyStatus;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlan;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanSpec;
+import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanStatus;
 import io.fabric8.kubernetes.api.model.DeletionPropagation;
 import io.fabric8.kubernetes.api.model.Endpoints;
 import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
@@ -103,21 +104,26 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
     }
 
     Map<?, ?> status = asMap(rollout.getAdditionalProperties().get("status"));
-    RolloutObservation.Abort abort = RolloutObservation.Abort.NONE;
-    if (Boolean.TRUE.equals(status.get("abort"))) {
-      String stableReplicaSet = stringValue(status.get("stableRS"));
-      abort =
-          new RolloutObservation.Abort(
-              true,
-              status.get("abortedAt") != null,
-              canaryTrafficZero(context, namespace, name),
-              stableTrafficRestored(context, namespace, name, stableReplicaSet));
-    }
-    return rolloutObservation(rollout, abort);
+    String stableReplicaSet = stringValue(status.get("stableRS"));
+    boolean abortRequested = Boolean.TRUE.equals(status.get("abort"));
+    RolloutObservation.Abort abort =
+        abortRequested
+            ? new RolloutObservation.Abort(
+                true, status.get("abortedAt") != null, canaryTrafficZero(context, namespace, name))
+            : RolloutObservation.Abort.NONE;
+    // The stable traffic path is only asserted where a decision depends on it: completing a
+    // rollback, or admitting a bootstrap candidate.
+    boolean stableTrafficReady =
+        (abortRequested || promotedShape(status, stableReplicaSet))
+            && stableTrafficReady(context, namespace, name, stableReplicaSet);
+    return rolloutObservation(rollout, stableTrafficReady, abort, bootstrapAnalysis(plan, context));
   }
 
   static RolloutObservation rolloutObservation(
-      GenericKubernetesResource rollout, RolloutObservation.Abort abort) {
+      GenericKubernetesResource rollout,
+      boolean stableTrafficReady,
+      RolloutObservation.Abort abort,
+      RolloutObservation.StepAnalysis bootstrapAnalysis) {
     Map<?, ?> status = asMap(rollout.getAdditionalProperties().get("status"));
     Long generation = rollout.getMetadata().getGeneration();
     Long observedGeneration = longValue(status.get("observedGeneration"));
@@ -135,10 +141,42 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
         stringValue(status.get("currentPodHash")),
         integerValue(status.get("replicas")),
         integerValue(status.get("readyReplicas")),
+        stableTrafficReady,
         abort,
         pauseReasons(status.get("pauseConditions")),
         new RolloutObservation.StepAnalysis(
-            stringValue(stepAnalysis.get("name")), stringValue(stepAnalysis.get("status"))));
+            stringValue(stepAnalysis.get("name")), stringValue(stepAnalysis.get("status"))),
+        bootstrapAnalysis);
+  }
+
+  private static boolean promotedShape(Map<?, ?> status, String stableReplicaSet) {
+    return "Healthy".equals(stringValue(status.get("phase")))
+        && stableReplicaSet != null
+        && !stableReplicaSet.isBlank()
+        && stableReplicaSet.equals(stringValue(status.get("currentPodHash")));
+  }
+
+  private static RolloutObservation.StepAnalysis bootstrapAnalysis(
+      ReleasePlan plan, Context<ReleasePlan> context) {
+    ReleasePlanStatus status = plan.getStatus();
+    if (status == null || status.phase() != ReleasePlanStatus.Phase.Bootstrapping) {
+      return RolloutObservation.StepAnalysis.NONE;
+    }
+    GenericKubernetesResource run =
+        context
+            .getClient()
+            .genericKubernetesResources(analysisRunDefinition())
+            .inNamespace(plan.getMetadata().getNamespace())
+            .withName(
+                ReleaseResourceRenderer.bootstrapAnalysisName(
+                    ReleaseResourceRenderer.Identity.from(plan)))
+            .get();
+    if (run == null) {
+      return RolloutObservation.StepAnalysis.NONE;
+    }
+    return new RolloutObservation.StepAnalysis(
+        run.getMetadata().getName(),
+        stringValue(asMap(run.getAdditionalProperties().get("status")).get("phase")));
   }
 
   private static List<String> pauseReasons(Object pauseConditions) {
@@ -170,7 +208,7 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
                     canaryIngress.getMetadata().getAnnotations().get(CANARY_WEIGHT_ANNOTATION)));
   }
 
-  private static boolean stableTrafficRestored(
+  private static boolean stableTrafficReady(
       Context<ReleasePlan> context, String namespace, String name, String stableReplicaSet) {
     Service stableService =
         context.getClient().services().inNamespace(namespace).withName(name + "-stable").get();
@@ -236,6 +274,8 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
     List<ReplicaSet> planReplicaSets = planReplicaSets(context, namespace, uid);
     List<GenericKubernetesResource> analysisTemplates =
         planAnalysisTemplates(context, namespace, uid);
+    List<GenericKubernetesResource> analysisRuns =
+        releaseAnalysisRuns(context, namespace, uid, name);
     boolean managedChildrenPresent =
         rollout != null
             || stableService != null
@@ -243,7 +283,8 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
             || stableIngress != null
             || canaryIngress != null
             || !planReplicaSets.isEmpty()
-            || !analysisTemplates.isEmpty();
+            || !analysisTemplates.isEmpty()
+            || !analysisRuns.isEmpty();
     List<ReplicaSet> retainedStableReplicaSets =
         observedStableReplicaSet == null
             ? List.of()
@@ -267,7 +308,8 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
             && planReplicaSets.size() == 1
             && canaryService == null
             && canaryIngress == null
-            && analysisTemplates.isEmpty();
+            && analysisTemplates.isEmpty()
+            && analysisRuns.isEmpty();
 
     return new CleanupObservation(
         rollout != null,
@@ -289,11 +331,31 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
   }
 
   @Override
+  public void stopCandidateTraffic(ReleasePlan plan, Context<ReleasePlan> context) {
+    String namespace = plan.getMetadata().getNamespace();
+    String name = plan.getMetadata().getName();
+    Resource<GenericKubernetesResource> rollout = rollout(context, namespace, name);
+    if (rollout.get() == null) {
+      return;
+    }
+    // A failed bootstrap has no stable revision to restore, so the only safe state is serving
+    // nothing. The field manager is preserved so a corrected generation can apply its own replicas.
+    rollout.patch(
+        new PatchContext.Builder()
+            .withPatchType(PatchType.JSON_MERGE)
+            .withFieldManager(ReleaseResourceRenderer.FIELD_MANAGER)
+            .build(),
+        "{\"spec\":{\"replicas\":0}}");
+  }
+
+  @Override
   public void deleteManagedChildren(ReleasePlan plan, Context<ReleasePlan> context) {
     String namespace = plan.getMetadata().getNamespace();
     String name = plan.getMetadata().getName();
     String uid = plan.getMetadata().getUid();
     rollout(context, namespace, name).delete();
+    releaseAnalysisRuns(context, namespace, uid, name)
+        .forEach(run -> context.getClient().resource(run).delete());
     planAnalysisTemplates(context, namespace, uid)
         .forEach(template -> context.getClient().resource(template).delete());
     planReplicaSets(context, namespace, uid)
@@ -359,6 +421,10 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
         .delete();
     planAnalysisTemplates(context, namespace, uid)
         .forEach(template -> context.getClient().resource(template).delete());
+    // RG-DEL-003: orphaning retains only stable resources, so analysis children are removed even
+    // though the Rollout itself is deleted without cascading.
+    releaseAnalysisRuns(context, namespace, uid, name)
+        .forEach(run -> context.getClient().resource(run).delete());
     rollout(context, namespace, name).withPropagationPolicy(DeletionPropagation.ORPHAN).delete();
     replicaSets.stream()
         .filter(
@@ -399,6 +465,16 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
         .withVersion("v1alpha1")
         .withKind("Rollout")
         .withPlural("rollouts")
+        .withNamespaced(true)
+        .build();
+  }
+
+  static ResourceDefinitionContext analysisRunDefinition() {
+    return new ResourceDefinitionContext.Builder()
+        .withGroup("argoproj.io")
+        .withVersion("v1alpha1")
+        .withKind("AnalysisRun")
+        .withPlural("analysisruns")
         .withNamespaced(true)
         .build();
   }
@@ -479,6 +555,36 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
         .genericKubernetesResources(analysisTemplateDefinition())
         .inNamespace(namespace)
         .withName(name);
+  }
+
+  /** Bootstrap runs ReleaseGuard owns plus the step runs Argo created for this release. */
+  private static List<GenericKubernetesResource> releaseAnalysisRuns(
+      Context<ReleasePlan> context, String namespace, String planUid, String rolloutName) {
+    return context
+        .getClient()
+        .genericKubernetesResources(analysisRunDefinition())
+        .inNamespace(namespace)
+        .list()
+        .getItems()
+        .stream()
+        .filter(run -> ownedByRelease(run.getMetadata(), planUid, rolloutName))
+        .toList();
+  }
+
+  private static boolean ownedByRelease(ObjectMeta metadata, String planUid, String rolloutName) {
+    if (metadata == null) {
+      return false;
+    }
+    boolean labelled =
+        metadata.getLabels() != null
+            && planUid.equals(metadata.getLabels().get(ReleaseResourceRenderer.PLAN_UID_LABEL));
+    boolean ownedByRollout =
+        metadata.getOwnerReferences() != null
+            && metadata.getOwnerReferences().stream()
+                .anyMatch(
+                    owner ->
+                        "Rollout".equals(owner.getKind()) && rolloutName.equals(owner.getName()));
+    return labelled || ownedByRollout;
   }
 
   private static List<GenericKubernetesResource> planAnalysisTemplates(
