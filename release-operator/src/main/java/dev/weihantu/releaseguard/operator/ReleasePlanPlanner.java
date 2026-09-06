@@ -1,5 +1,6 @@
 package dev.weihantu.releaseguard.operator;
 
+import dev.weihantu.releaseguard.api.v1alpha1.KubernetesDuration;
 import dev.weihantu.releaseguard.api.v1alpha1.MetricPolicySpec;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlan;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanSpec;
@@ -12,11 +13,16 @@ import dev.weihantu.releaseguard.api.validation.ValidationResult;
 import io.fabric8.kubernetes.api.model.Condition;
 import io.fabric8.kubernetes.api.model.ConditionBuilder;
 import io.fabric8.kubernetes.api.model.HasMetadata;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -77,6 +83,7 @@ public final class ReleasePlanPlanner {
           status(
               current,
               identity,
+              current == null ? null : current.phase(),
               Phase.Validating,
               null,
               current == null ? null : current.stableRevision(),
@@ -106,6 +113,7 @@ public final class ReleasePlanPlanner {
           status(
               current,
               identity,
+              currentPhase,
               next,
               0,
               current.stableRevision(),
@@ -135,7 +143,7 @@ public final class ReleasePlanPlanner {
       Map<String, MetricPolicySnapshot> acceptedPolicies,
       RolloutObservation observation) {
     ReleasePlanSpec spec = plan.getSpec();
-    Phase phase = projectedPhase(currentPhase, observation, spec);
+    Phase phase = projectedPhase(currentPhase, observation, spec, current);
     phaseMachine.requireTransition(currentPhase, phase);
     String stableRevision = current.stableRevision();
     String canaryRevision = current.canaryRevision();
@@ -170,6 +178,7 @@ public final class ReleasePlanPlanner {
         status(
             current,
             identity,
+            currentPhase,
             phase,
             currentStep,
             stableRevision,
@@ -179,31 +188,36 @@ public final class ReleasePlanPlanner {
             message);
     return new ReconciliationPlan(
         status,
-        desiredResources(plan, acceptedPolicies, currentPhase, phase, observation),
-        phase == Phase.RollingBack ? ROLLBACK_REQUEUE : null,
+        desiredResources(plan, acceptedPolicies, currentPhase, phase, observation, status),
+        phase == Phase.RollingBack ? calculateRollbackRequeue(current, spec) : null,
         currentPhase == Phase.Bootstrapping && phase == Phase.Failed);
   }
 
   /**
    * A failed bootstrap stops asserting its workload so the candidate can be scaled to zero, and a
    * ready bootstrap candidate gains the administrator-approved absolute gate Argo cannot schedule
-   * for it (RG-BOOT-002).
+   * for it (RG-BOOT-002). Emits the deterministic ReleaseEvent outbox resource for any recorded
+   * transition (RG-OUT-001, RG-OUT-002).
    */
   private List<HasMetadata> desiredResources(
       ReleasePlan plan,
       Map<String, MetricPolicySnapshot> acceptedPolicies,
       Phase currentPhase,
       Phase phase,
-      RolloutObservation observation) {
-    if (phase == Phase.Failed) {
-      return List.of();
+      RolloutObservation observation,
+      ReleasePlanStatus status) {
+    List<HasMetadata> desired = new ArrayList<>();
+    if (phase != Phase.Failed) {
+      desired.addAll(renderer.render(plan, acceptedPolicies));
+      if (currentPhase == Phase.Bootstrapping
+          && observation.bootstrapWorkloadReady()
+          && !observation.bootstrapAnalysis().decided()) {
+        desired.addAll(
+            renderer.renderBootstrapAnalysis(plan, acceptedPolicies, observation.currentPodHash()));
+      }
     }
-    List<HasMetadata> desired = new ArrayList<>(renderer.render(plan, acceptedPolicies));
-    if (currentPhase == Phase.Bootstrapping
-        && observation.bootstrapWorkloadReady()
-        && !observation.bootstrapAnalysis().decided()) {
-      desired.addAll(
-          renderer.renderBootstrapAnalysis(plan, acceptedPolicies, observation.currentPodHash()));
+    if (status != null && status.lastTransition() != null) {
+      desired.add(ReleaseEventRenderer.render(plan, status.lastTransition(), status));
     }
     return List.copyOf(desired);
   }
@@ -238,16 +252,26 @@ public final class ReleasePlanPlanner {
     return Map.copyOf(specs);
   }
 
-  private static Phase projectedPhase(
-      Phase currentPhase, RolloutObservation observation, ReleasePlanSpec spec) {
+  private Phase projectedPhase(
+      Phase currentPhase,
+      RolloutObservation observation,
+      ReleasePlanSpec spec,
+      ReleasePlanStatus current) {
     if (!observation.present() || !observation.statusCurrent()) {
       return currentPhase;
     }
     if (observation.abort().requested()) {
-      return abortedPhase(currentPhase, observation);
+      return abortedPhase(currentPhase, observation, spec, current);
     }
     if (currentPhase == Phase.RollingBack || currentPhase == Phase.Paused) {
-      // Leaving Paused requires an operator action; a resumed child alone cannot promote.
+      if (currentPhase == Phase.RollingBack) {
+        if (observation.rollbackComplete()) {
+          return Phase.RolledBack;
+        }
+        if (rollbackDeadlineExceeded(current, spec)) {
+          return Phase.Failed;
+        }
+      }
       return currentPhase;
     }
     if ("Degraded".equals(observation.argoPhase())) {
@@ -283,15 +307,81 @@ public final class ReleasePlanPlanner {
     return Phase.Bootstrapping;
   }
 
-  private static Phase abortedPhase(Phase currentPhase, RolloutObservation observation) {
+  private Phase abortedPhase(
+      Phase currentPhase,
+      RolloutObservation observation,
+      ReleasePlanSpec spec,
+      ReleasePlanStatus current) {
     if (currentPhase == Phase.Bootstrapping) {
       // RG-BOOT-003: a bootstrap has no baseline to restore, so it fails instead of rolling back.
       return Phase.Failed;
     }
-    if (currentPhase == Phase.RollingBack && observation.rollbackComplete()) {
-      return Phase.RolledBack;
+    if (currentPhase == Phase.RollingBack) {
+      if (observation.rollbackComplete()) {
+        return Phase.RolledBack;
+      }
+      if (rollbackDeadlineExceeded(current, spec)) {
+        return Phase.Failed;
+      }
+      return Phase.RollingBack;
     }
     return Phase.RollingBack;
+  }
+
+  private boolean rollbackDeadlineExceeded(ReleasePlanStatus current, ReleasePlanSpec spec) {
+    if (spec == null
+        || spec.failurePolicy() == null
+        || spec.failurePolicy().rollbackDeadline() == null) {
+      return false;
+    }
+    Duration deadline =
+        KubernetesDuration.parse(spec.failurePolicy().rollbackDeadline()).orElse(null);
+    if (deadline == null) {
+      return false;
+    }
+    Instant started = rollbackStartTime(current);
+    return !clock.instant().isBefore(started.plus(deadline));
+  }
+
+  private Instant rollbackStartTime(ReleasePlanStatus current) {
+    if (current != null && current.lastTransition() != null) {
+      ReleasePlanStatus.Transition transition = current.lastTransition();
+      if ("rollback.started".equals(transition.type()) && transition.occurredAt() != null) {
+        try {
+          return Instant.parse(transition.occurredAt());
+        } catch (DateTimeParseException ignored) {
+          // Fall through
+        }
+      }
+    }
+    Condition degraded = existingConditions(current).get("Degraded");
+    if (degraded != null && degraded.getLastTransitionTime() != null) {
+      try {
+        return Instant.parse(degraded.getLastTransitionTime());
+      } catch (DateTimeParseException ignored) {
+        // Fall through
+      }
+    }
+    return clock.instant();
+  }
+
+  private Duration calculateRollbackRequeue(ReleasePlanStatus current, ReleasePlanSpec spec) {
+    if (spec == null
+        || spec.failurePolicy() == null
+        || spec.failurePolicy().rollbackDeadline() == null) {
+      return ROLLBACK_REQUEUE;
+    }
+    Duration deadline =
+        KubernetesDuration.parse(spec.failurePolicy().rollbackDeadline()).orElse(null);
+    if (deadline == null) {
+      return ROLLBACK_REQUEUE;
+    }
+    Instant deadlineInstant = rollbackStartTime(current).plus(deadline);
+    Duration remaining = Duration.between(clock.instant(), deadlineInstant);
+    if (remaining.isNegative() || remaining.isZero()) {
+      return IMMEDIATE_REQUEUE;
+    }
+    return remaining.compareTo(ROLLBACK_REQUEUE) < 0 ? remaining : ROLLBACK_REQUEUE;
   }
 
   private static String observationReason(
@@ -308,13 +398,18 @@ public final class ReleasePlanPlanner {
           ? "GateApprovedPromotion"
           : "PromotionObservedWithoutGateEvidence";
     }
-    if (phase == Phase.Failed && currentPhase == Phase.Bootstrapping) {
-      if (observation.abort().requested()) {
-        return "BootstrapAborted";
+    if (phase == Phase.Failed) {
+      if (currentPhase == Phase.Bootstrapping) {
+        if (observation.abort().requested()) {
+          return "BootstrapAborted";
+        }
+        return "Failed".equals(observation.bootstrapAnalysis().phase())
+            ? "BootstrapGateFailed"
+            : "ArgoRolloutDegraded";
       }
-      return "Failed".equals(observation.bootstrapAnalysis().phase())
-          ? "BootstrapGateFailed"
-          : "ArgoRolloutDegraded";
+      if (currentPhase == Phase.RollingBack) {
+        return "RollbackDeadlineExceeded";
+      }
     }
     if (currentPhase == Phase.Bootstrapping) {
       return bootstrapReason(observation);
@@ -375,8 +470,13 @@ public final class ReleasePlanPlanner {
           ? "Every declared gate passed and Argo Rollouts promoted the candidate to full traffic"
           : "Argo Rollouts reached full traffic without an observed terminal gate decision";
     }
-    if (phase == Phase.Failed && currentPhase == Phase.Bootstrapping) {
-      return "Bootstrap failed; candidate traffic is being stopped and no rollback is claimed";
+    if (phase == Phase.Failed) {
+      if (currentPhase == Phase.Bootstrapping) {
+        return "Bootstrap failed; candidate traffic is being stopped and no rollback is claimed";
+      }
+      if (currentPhase == Phase.RollingBack) {
+        return "Stable endpoints were not restored before the rollback deadline expired";
+      }
     }
     if (currentPhase == Phase.Bootstrapping) {
       return bootstrapMessage(bootstrapReason(observation));
@@ -447,6 +547,7 @@ public final class ReleasePlanPlanner {
         status(
             current,
             identity,
+            current == null ? null : current.phase(),
             Phase.Failed,
             current == null ? null : current.currentStep(),
             current == null ? null : current.stableRevision(),
@@ -460,6 +561,7 @@ public final class ReleasePlanPlanner {
   private ReleasePlanStatus status(
       ReleasePlanStatus current,
       ReleaseResourceRenderer.Identity identity,
+      Phase currentPhase,
       Phase phase,
       Integer currentStep,
       String stableRevision,
@@ -469,6 +571,7 @@ public final class ReleasePlanPlanner {
       String message) {
     List<Condition> conditions =
         conditions(current, identity.generation(), phase, gateDecision, reason, message);
+    ReleasePlanStatus.Transition transition = transition(current, identity, currentPhase, phase);
     return new ReleasePlanStatus(
         identity.generation(),
         identity.releaseId(),
@@ -483,9 +586,63 @@ public final class ReleasePlanPlanner {
             ? new ReleasePlanStatus.ResourceReference(identity.name())
             : null,
         gateDecision,
-        sameGeneration(current, identity.generation()) ? current.lastTransition() : null,
+        transition,
         sameGeneration(current, identity.generation()) ? current.pendingOutboxEvents() : null,
         conditions);
+  }
+
+  private ReleasePlanStatus.Transition transition(
+      ReleasePlanStatus current,
+      ReleaseResourceRenderer.Identity identity,
+      Phase currentPhase,
+      Phase phase) {
+    ReleasePlanStatus.Transition transition =
+        sameGeneration(current, identity.generation()) ? current.lastTransition() : null;
+    if (currentPhase == Phase.Bootstrapping && phase == Phase.Succeeded) {
+      long sequence = nextSequence(current);
+      String eventId = deterministicEventId(identity.releaseId(), sequence, "release.bootstrapped");
+      return new ReleasePlanStatus.Transition(
+          sequence, eventId, "release.bootstrapped", Instant.now(clock).toString());
+    }
+    if (currentPhase != Phase.RollingBack && phase == Phase.RollingBack) {
+      long sequence = nextSequence(current);
+      String eventId = deterministicEventId(identity.releaseId(), sequence, "rollback.started");
+      return new ReleasePlanStatus.Transition(
+          sequence, eventId, "rollback.started", Instant.now(clock).toString());
+    }
+    if (currentPhase == Phase.RollingBack && phase == Phase.Failed) {
+      long sequence = nextSequence(current);
+      String eventId = deterministicEventId(identity.releaseId(), sequence, "rollback.failed");
+      return new ReleasePlanStatus.Transition(
+          sequence, eventId, "rollback.failed", Instant.now(clock).toString());
+    }
+    if (currentPhase == Phase.RollingBack && phase == Phase.RolledBack) {
+      long sequence = nextSequence(current);
+      String eventId = deterministicEventId(identity.releaseId(), sequence, "rollback.completed");
+      return new ReleasePlanStatus.Transition(
+          sequence, eventId, "rollback.completed", Instant.now(clock).toString());
+    }
+    return transition;
+  }
+
+  private static String deterministicEventId(String releaseId, long sequence, String type) {
+    try {
+      MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      byte[] hash =
+          digest.digest((releaseId + ":" + sequence + ":" + type).getBytes(StandardCharsets.UTF_8));
+      return "sha256:" + HexFormat.of().formatHex(hash);
+    } catch (NoSuchAlgorithmException exception) {
+      throw new IllegalStateException("SHA-256 is unavailable", exception);
+    }
+  }
+
+  private static long nextSequence(ReleasePlanStatus current) {
+    if (current == null
+        || current.lastTransition() == null
+        || current.lastTransition().sequence() == null) {
+      return 1L;
+    }
+    return current.lastTransition().sequence() + 1L;
   }
 
   private List<Condition> conditions(
@@ -572,10 +729,7 @@ public final class ReleasePlanPlanner {
       String message) {
     Condition existing = existingConditions(current).get(type);
     String transitionTime =
-        existing != null
-                && value.equals(existing.getStatus())
-                && reason.equals(existing.getReason())
-                && message.equals(existing.getMessage())
+        existing != null && value.equals(existing.getStatus())
             ? existing.getLastTransitionTime()
             : Instant.now(clock).toString();
     return new ConditionBuilder()

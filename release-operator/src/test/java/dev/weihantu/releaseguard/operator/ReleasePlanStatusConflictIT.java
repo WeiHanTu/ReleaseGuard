@@ -379,6 +379,11 @@ class ReleasePlanStatusConflictIT {
     }
 
     @Override
+    public void pruneSupersededTemplates(ReleasePlan plan, Context<ReleasePlan> context) {
+      delegate.pruneSupersededTemplates(plan, context);
+    }
+
+    @Override
     public void publishStatus(ReleasePlan plan, Context<ReleasePlan> context) {
       delegate.publishStatus(plan, context);
     }

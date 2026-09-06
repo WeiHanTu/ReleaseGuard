@@ -3,6 +3,8 @@ package dev.weihantu.releaseguard.operator;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -11,11 +13,13 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class OperatorHealthServerTest {
-  private final HttpClient client = HttpClient.newHttpClient();
+  private final HttpClient client =
+      HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
 
   @Test
   void separatesLivenessFromReadiness() throws Exception {
-    try (OperatorHealthServer server = OperatorHealthServer.start(0)) {
+    try (OperatorHealthServer server =
+        OperatorHealthServer.start(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))) {
       assertResponse(server, "/healthz", 200, "ok\n");
       assertResponse(server, "/readyz", 503, "not ready\n");
 
@@ -27,7 +31,8 @@ class OperatorHealthServerTest {
 
   @Test
   void rejectsUnsupportedMethods() throws Exception {
-    try (OperatorHealthServer server = OperatorHealthServer.start(0)) {
+    try (OperatorHealthServer server =
+        OperatorHealthServer.start(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))) {
       HttpRequest request =
           HttpRequest.newBuilder(localUri(server, "/healthz"))
               .POST(HttpRequest.BodyPublishers.noBody())

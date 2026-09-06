@@ -15,6 +15,7 @@ public final class ReleaseGuardOperator {
     try {
       Operator operator = new Operator();
       operator.register(new ReleasePlanReconciler());
+      operator.register(new ReleaseActionReconciler());
       operator.installShutdownHook();
       operator.start();
       healthServer.markReady();

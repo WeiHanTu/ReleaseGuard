@@ -41,6 +41,7 @@ class ReleasePlanReconcilerTest {
     assertFalse(applyControl.getScheduleDelay().isPresent());
     assertEquals(Phase.Bootstrapping, plan.getStatus().phase());
     assertEquals(5, runtime.applied.size());
+    assertEquals(1, runtime.pruneCalls);
 
     runtime.rolloutObservation =
         new RolloutObservation(
@@ -215,6 +216,7 @@ class ReleasePlanReconcilerTest {
     private int trafficStops;
     private int deleteRequests;
     private int orphanRequests;
+    private int pruneCalls;
     private int statusWrites;
 
     @Override
@@ -257,6 +259,11 @@ class ReleasePlanReconcilerTest {
     @Override
     public void orphanStableResources(ReleasePlan plan, Context<ReleasePlan> context) {
       orphanRequests++;
+    }
+
+    @Override
+    public void pruneSupersededTemplates(ReleasePlan plan, Context<ReleasePlan> context) {
+      pruneCalls++;
     }
 
     @Override

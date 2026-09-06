@@ -436,6 +436,22 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
   }
 
   @Override
+  public void pruneSupersededTemplates(ReleasePlan plan, Context<ReleasePlan> context) {
+    if (plan.getMetadata() == null || plan.getMetadata().getGeneration() == null) {
+      return;
+    }
+    String namespace = plan.getMetadata().getNamespace();
+    String uid = plan.getMetadata().getUid();
+    String currentTemplateName =
+        ReleaseResourceRenderer.analysisTemplateName(ReleaseResourceRenderer.Identity.from(plan));
+
+    planAnalysisTemplates(context, namespace, uid).stream()
+        .filter(template -> template.getMetadata() != null)
+        .filter(template -> !currentTemplateName.equals(template.getMetadata().getName()))
+        .forEach(template -> context.getClient().resource(template).delete());
+  }
+
+  @Override
   public void publishStatus(ReleasePlan plan, Context<ReleasePlan> context) {
     context.resourceOperations().updatePrimaryStatus(plan);
   }

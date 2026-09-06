@@ -24,7 +24,11 @@ final class OperatorHealthServer implements AutoCloseable {
   }
 
   static OperatorHealthServer start(int port) throws IOException {
-    HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+    return start(new InetSocketAddress(port));
+  }
+
+  static OperatorHealthServer start(InetSocketAddress socketAddress) throws IOException {
+    HttpServer server = HttpServer.create(socketAddress, 0);
     ExecutorService executor =
         Executors.newSingleThreadExecutor(
             runnable -> {

@@ -77,6 +77,7 @@ public final class ReleasePlanReconciler implements Reconciler<ReleasePlan>, Cle
     }
     if (plan.hasDesiredResources()) {
       runtime.apply(plan.desiredResources(), context);
+      runtime.pruneSupersededTemplates(resource, context);
     }
     publishStatusIfChanged(resource, plan.status(), context);
 

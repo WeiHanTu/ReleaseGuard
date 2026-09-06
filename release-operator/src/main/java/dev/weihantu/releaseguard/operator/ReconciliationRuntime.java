@@ -24,5 +24,7 @@ interface ReconciliationRuntime {
 
   void orphanStableResources(ReleasePlan plan, Context<ReleasePlan> context);
 
+  void pruneSupersededTemplates(ReleasePlan plan, Context<ReleasePlan> context);
+
   void publishStatus(ReleasePlan plan, Context<ReleasePlan> context);
 }

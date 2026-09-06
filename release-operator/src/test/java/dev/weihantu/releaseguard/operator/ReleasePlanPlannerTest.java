@@ -202,7 +202,12 @@ class ReleasePlanPlannerTest {
         result.status().lastGateDecision());
     assertEquals("True", conditionStatus(result.status(), "GateHealthy"));
     assertFalse(result.stopCandidateTraffic());
-    assertEquals(5, result.desiredResources().size());
+    assertEquals(6, result.desiredResources().size());
+    assertEquals("ReleaseEvent", result.desiredResources().getLast().getKind());
+    assertEquals("checkout-20-000001", result.desiredResources().getLast().getMetadata().getName());
+    assertEquals("release.bootstrapped", result.status().lastTransition().type());
+    assertEquals(1L, result.status().lastTransition().sequence());
+    assertTrue(result.status().lastTransition().eventId().startsWith("sha256:"));
   }
 
   @Test
@@ -383,6 +388,8 @@ class ReleasePlanPlannerTest {
     assertEquals(Phase.RollingBack, rollingBack.status().phase());
     assertEquals("GateFailedRollback", conditionReason(rollingBack.status(), "Ready"));
     assertEquals("False", conditionStatus(rollingBack.status(), "GateHealthy"));
+    assertEquals("rollback.started", rollingBack.status().lastTransition().type());
+    assertEquals(1L, rollingBack.status().lastTransition().sequence());
     assertTrue(rollingBack.hasDesiredResources());
 
     plan.setStatus(rollingBack.status());
@@ -401,6 +408,7 @@ class ReleasePlanPlannerTest {
                 false));
 
     assertEquals(Phase.RollingBack, stillRollingBack.status().phase());
+    assertEquals("rollback.started", stillRollingBack.status().lastTransition().type());
 
     plan.setStatus(stillRollingBack.status());
     ReconciliationPlan rolledBack =
@@ -420,6 +428,126 @@ class ReleasePlanPlannerTest {
     assertEquals(Phase.RolledBack, rolledBack.status().phase());
     assertEquals("StableTrafficRestored", conditionReason(rolledBack.status(), "Ready"));
     assertEquals("checkout-stable", rolledBack.status().stableRevision());
+    assertEquals("rollback.completed", rolledBack.status().lastTransition().type());
+    assertEquals(2L, rolledBack.status().lastTransition().sequence());
+  }
+
+  @Test
+  void rollbackDeadlineExceededTransitionsToFailedPreservingEvidence() {
+    var plan = OperatorTestFixtures.plan(14);
+    plan.setStatus(activeStatus(14, Phase.Progressing, "checkout-stable"));
+    RolloutObservation.StepAnalysis failedGate =
+        new RolloutObservation.StepAnalysis("checkout-candidate-1", "Failed");
+
+    ReconciliationPlan rollingBack =
+        planner.plan(
+            plan,
+            OperatorTestFixtures.policies(),
+            gated(
+                "Degraded",
+                0,
+                "stable",
+                "candidate",
+                new RolloutObservation.Abort(true, true, false),
+                List.of(),
+                failedGate,
+                false));
+
+    assertEquals(Phase.RollingBack, rollingBack.status().phase());
+    assertEquals("rollback.started", rollingBack.status().lastTransition().type());
+
+    Clock laterClock = Clock.fixed(Instant.parse("2026-08-29T12:01:01Z"), ZoneOffset.UTC);
+    ReleasePlanPlanner laterPlanner =
+        new ReleasePlanPlanner(
+            new ReleasePlanValidator(),
+            new ReleaseResourceRenderer(),
+            new ReleasePhaseMachine(),
+            laterClock);
+
+    plan.setStatus(rollingBack.status());
+    ReconciliationPlan deadlineExceeded =
+        laterPlanner.plan(
+            plan,
+            OperatorTestFixtures.policies(),
+            gated(
+                "Degraded",
+                0,
+                "stable",
+                "candidate",
+                new RolloutObservation.Abort(true, true, false),
+                List.of(),
+                failedGate,
+                false));
+
+    assertEquals(Phase.Failed, deadlineExceeded.status().phase());
+    assertEquals("RollbackDeadlineExceeded", conditionReason(deadlineExceeded.status(), "Ready"));
+    assertEquals("True", conditionStatus(deadlineExceeded.status(), "Degraded"));
+    assertEquals(
+        "RollbackDeadlineExceeded", conditionReason(deadlineExceeded.status(), "Degraded"));
+    assertEquals("rollback.failed", deadlineExceeded.status().lastTransition().type());
+    assertEquals(2L, deadlineExceeded.status().lastTransition().sequence());
+    assertEquals("checkout-stable", deadlineExceeded.status().stableRevision());
+    assertEquals("checkout-candidate", deadlineExceeded.status().canaryRevision());
+    assertNotNull(deadlineExceeded.status().lastGateDecision());
+    assertEquals("Failed", deadlineExceeded.status().lastGateDecision().decision());
+    assertTrue(deadlineExceeded.hasDesiredResources());
+    assertEquals(1, deadlineExceeded.desiredResources().size());
+    assertEquals("ReleaseEvent", deadlineExceeded.desiredResources().getFirst().getKind());
+    assertEquals(
+        "checkout-14-000002",
+        deadlineExceeded.desiredResources().getFirst().getMetadata().getName());
+    assertNull(deadlineExceeded.requeueAfter());
+  }
+
+  @Test
+  void rollbackRequeueBoundsRemainingDeadline() {
+    var plan = OperatorTestFixtures.plan(14);
+    plan.setStatus(activeStatus(14, Phase.Progressing, "checkout-stable"));
+    RolloutObservation.StepAnalysis failedGate =
+        new RolloutObservation.StepAnalysis("checkout-candidate-1", "Failed");
+
+    ReconciliationPlan rollingBack =
+        planner.plan(
+            plan,
+            OperatorTestFixtures.policies(),
+            gated(
+                "Degraded",
+                0,
+                "stable",
+                "candidate",
+                new RolloutObservation.Abort(true, true, false),
+                List.of(),
+                failedGate,
+                false));
+
+    assertEquals(Phase.RollingBack, rollingBack.status().phase());
+    assertEquals(Duration.ofSeconds(5), rollingBack.requeueAfter());
+
+    Clock nearDeadlineClock = Clock.fixed(Instant.parse("2026-08-29T12:00:58Z"), ZoneOffset.UTC);
+    ReleasePlanPlanner nearDeadlinePlanner =
+        new ReleasePlanPlanner(
+            new ReleasePlanValidator(),
+            new ReleaseResourceRenderer(),
+            new ReleasePhaseMachine(),
+            nearDeadlineClock);
+
+    plan.setStatus(rollingBack.status());
+    ReconciliationPlan nearDeadline =
+        nearDeadlinePlanner.plan(
+            plan,
+            OperatorTestFixtures.policies(),
+            gated(
+                "Degraded",
+                0,
+                "stable",
+                "candidate",
+                new RolloutObservation.Abort(true, true, false),
+                List.of(),
+                failedGate,
+                false));
+
+    assertEquals(Phase.RollingBack, nearDeadline.status().phase());
+    assertEquals(Duration.ofSeconds(2), nearDeadline.requeueAfter());
   }
 
   @Test
