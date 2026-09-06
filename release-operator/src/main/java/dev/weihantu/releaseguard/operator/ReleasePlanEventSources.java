@@ -1,5 +1,6 @@
 package dev.weihantu.releaseguard.operator;
 
+import dev.weihantu.releaseguard.api.v1alpha1.ReleaseEvent;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlan;
 import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
 import io.fabric8.kubernetes.api.model.HasMetadata;
@@ -56,6 +57,13 @@ final class ReleasePlanEventSources {
             .withLabelSelector(MANAGED_SELECTOR)
             .withSecondaryToPrimaryMapper(ReleasePlanEventSources::primaryResourceIDs)
             .build();
+    var releaseEventConfiguration =
+        InformerEventSourceConfiguration.from(ReleaseEvent.class, ReleasePlan.class)
+            .withName("release-event-outbox")
+            .withNamespacesInheritedFromController()
+            .withLabelSelector(MANAGED_SELECTOR)
+            .withSecondaryToPrimaryMapper(ReleasePlanEventSources::primaryResourceIDs)
+            .build();
 
     return List.of(
         new InformerEventSource<GenericKubernetesResource, ReleasePlan>(
@@ -63,7 +71,8 @@ final class ReleasePlanEventSources {
         new InformerEventSource<GenericKubernetesResource, ReleasePlan>(
             analysisRunConfiguration, context),
         new InformerEventSource<Service, ReleasePlan>(serviceConfiguration, context),
-        new InformerEventSource<Ingress, ReleasePlan>(ingressConfiguration, context));
+        new InformerEventSource<Ingress, ReleasePlan>(ingressConfiguration, context),
+        new InformerEventSource<ReleaseEvent, ReleasePlan>(releaseEventConfiguration, context));
   }
 
   static Set<ResourceID> primaryResourceIDs(HasMetadata secondary) {

@@ -729,6 +729,149 @@ class ReleasePlanPlannerTest {
         .getReason();
   }
 
+  @Test
+  void auditBackpressurePausesProgressingRelease() {
+    var plan = OperatorTestFixtures.plan(5);
+    plan.setStatus(activeStatus(5, Phase.Progressing, "checkout-stable"));
+
+    RolloutObservation observation =
+        new RolloutObservation(
+            true,
+            true,
+            "Progressing",
+            1,
+            "stablehash",
+            "canaryhash",
+            2,
+            2,
+            false,
+            RolloutObservation.Abort.NONE,
+            List.of(),
+            RolloutObservation.StepAnalysis.NONE,
+            RolloutObservation.StepAnalysis.NONE,
+            51);
+
+    ReconciliationPlan result = planner.plan(plan, OperatorTestFixtures.policies(), observation);
+
+    assertEquals(Phase.Paused, result.status().phase());
+    assertEquals("AuditBackpressure", conditionReason(result.status(), "AuditHealthy"));
+    assertEquals("False", conditionStatus(result.status(), "AuditHealthy"));
+    assertEquals("True", conditionStatus(result.status(), "Degraded"));
+    assertEquals("AuditBackpressure", conditionReason(result.status(), "Degraded"));
+  }
+
+  @Test
+  void auditBackpressureDoesNotBlockAbortOrRollback() {
+    var plan = OperatorTestFixtures.plan(5);
+    plan.setStatus(activeStatus(5, Phase.Progressing, "checkout-stable"));
+
+    RolloutObservation observation =
+        new RolloutObservation(
+            true,
+            true,
+            "Progressing",
+            1,
+            "stablehash",
+            "canaryhash",
+            2,
+            2,
+            false,
+            new RolloutObservation.Abort(true, true, false),
+            List.of(),
+            RolloutObservation.StepAnalysis.NONE,
+            RolloutObservation.StepAnalysis.NONE,
+            100);
+
+    ReconciliationPlan result = planner.plan(plan, OperatorTestFixtures.policies(), observation);
+
+    assertEquals(Phase.RollingBack, result.status().phase());
+    assertEquals("RolloutAbortObserved", conditionReason(result.status(), "Progressing"));
+  }
+
+  @Test
+  void clearingAuditBackpressureResumesProgressing() {
+    var plan = OperatorTestFixtures.plan(5);
+    List<io.fabric8.kubernetes.api.model.Condition> pausedConditions =
+        List.of(
+            new io.fabric8.kubernetes.api.model.ConditionBuilder()
+                .withType("AuditHealthy")
+                .withStatus("False")
+                .withReason("AuditBackpressure")
+                .withLastTransitionTime("2026-08-29T11:50:00Z")
+                .build(),
+            new io.fabric8.kubernetes.api.model.ConditionBuilder()
+                .withType("Progressing")
+                .withStatus("False")
+                .withReason("AuditBackpressure")
+                .withLastTransitionTime("2026-08-29T11:50:00Z")
+                .build());
+    ReleasePlanStatus pausedStatus =
+        new ReleasePlanStatus(
+            5L,
+            OperatorTestFixtures.UID + ":5",
+            Phase.Paused,
+            1,
+            "checkout-stable",
+            "checkout-canary",
+            new ReleasePlanStatus.ResourceReference("checkout"),
+            null,
+            null,
+            60,
+            pausedConditions);
+    plan.setStatus(pausedStatus);
+
+    RolloutObservation observation =
+        new RolloutObservation(
+            true,
+            true,
+            "Progressing",
+            1,
+            "stablehash",
+            "canaryhash",
+            2,
+            2,
+            false,
+            RolloutObservation.Abort.NONE,
+            List.of(),
+            RolloutObservation.StepAnalysis.NONE,
+            RolloutObservation.StepAnalysis.NONE,
+            10);
+
+    ReconciliationPlan result = planner.plan(plan, OperatorTestFixtures.policies(), observation);
+
+    assertEquals(Phase.Progressing, result.status().phase());
+    assertEquals("True", conditionStatus(result.status(), "AuditHealthy"));
+    assertEquals("AuditStreamHealthy", conditionReason(result.status(), "AuditHealthy"));
+  }
+
+  @Test
+  void auditBackpressurePreventsBootstrapPromotion() {
+    var plan = OperatorTestFixtures.plan(1);
+    plan.setStatus(activeStatus(1, Phase.Bootstrapping, null));
+
+    RolloutObservation observation =
+        new RolloutObservation(
+            true,
+            true,
+            "Healthy",
+            0,
+            null,
+            "canaryhash",
+            2,
+            2,
+            true,
+            RolloutObservation.Abort.NONE,
+            List.of(),
+            RolloutObservation.StepAnalysis.NONE,
+            new RolloutObservation.StepAnalysis("bootstrap-analysis", "Successful"),
+            55);
+
+    ReconciliationPlan result = planner.plan(plan, OperatorTestFixtures.policies(), observation);
+
+    assertEquals(Phase.Bootstrapping, result.status().phase());
+    assertEquals("AuditBackpressure", conditionReason(result.status(), "AuditHealthy"));
+  }
+
   private static String conditionStatus(ReleasePlanStatus status, String type) {
     return status.conditions().stream()
         .filter(condition -> type.equals(condition.getType()))

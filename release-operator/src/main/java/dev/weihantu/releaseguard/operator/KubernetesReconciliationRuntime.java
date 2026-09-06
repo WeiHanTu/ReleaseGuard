@@ -3,6 +3,8 @@ package dev.weihantu.releaseguard.operator;
 import dev.weihantu.releaseguard.api.v1alpha1.MetricPolicy;
 import dev.weihantu.releaseguard.api.v1alpha1.MetricPolicySpec;
 import dev.weihantu.releaseguard.api.v1alpha1.MetricPolicyStatus;
+import dev.weihantu.releaseguard.api.v1alpha1.ReleaseEvent;
+import dev.weihantu.releaseguard.api.v1alpha1.ReleaseEventStatus;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlan;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanSpec;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanStatus;
@@ -98,9 +100,10 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
   public RolloutObservation observeRollout(ReleasePlan plan, Context<ReleasePlan> context) {
     String namespace = plan.getMetadata().getNamespace();
     String name = plan.getMetadata().getName();
+    int pendingOutboxEvents = countPendingOutboxEvents(context, namespace, name);
     GenericKubernetesResource rollout = rollout(context, namespace, name).get();
     if (rollout == null) {
-      return RolloutObservation.missing();
+      return RolloutObservation.missing(pendingOutboxEvents);
     }
 
     Map<?, ?> status = asMap(rollout.getAdditionalProperties().get("status"));
@@ -116,7 +119,8 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
     boolean stableTrafficReady =
         (abortRequested || promotedShape(status, stableReplicaSet))
             && stableTrafficReady(context, namespace, name, stableReplicaSet);
-    return rolloutObservation(rollout, stableTrafficReady, abort, bootstrapAnalysis(plan, context));
+    return rolloutObservation(
+        rollout, stableTrafficReady, abort, bootstrapAnalysis(plan, context), pendingOutboxEvents);
   }
 
   static RolloutObservation rolloutObservation(
@@ -124,6 +128,15 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
       boolean stableTrafficReady,
       RolloutObservation.Abort abort,
       RolloutObservation.StepAnalysis bootstrapAnalysis) {
+    return rolloutObservation(rollout, stableTrafficReady, abort, bootstrapAnalysis, 0);
+  }
+
+  static RolloutObservation rolloutObservation(
+      GenericKubernetesResource rollout,
+      boolean stableTrafficReady,
+      RolloutObservation.Abort abort,
+      RolloutObservation.StepAnalysis bootstrapAnalysis,
+      int pendingOutboxEvents) {
     Map<?, ?> status = asMap(rollout.getAdditionalProperties().get("status"));
     Long generation = rollout.getMetadata().getGeneration();
     Long observedGeneration = longValue(status.get("observedGeneration"));
@@ -146,7 +159,34 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
         pauseReasons(status.get("pauseConditions")),
         new RolloutObservation.StepAnalysis(
             stringValue(stepAnalysis.get("name")), stringValue(stepAnalysis.get("status"))),
-        bootstrapAnalysis);
+        bootstrapAnalysis,
+        pendingOutboxEvents);
+  }
+
+  private int countPendingOutboxEvents(
+      Context<ReleasePlan> context, String namespace, String planName) {
+    try {
+      List<ReleaseEvent> events =
+          context
+              .getClient()
+              .resources(ReleaseEvent.class)
+              .inNamespace(namespace)
+              .withLabel("delivery.weihantu.dev/release-name", planName)
+              .list()
+              .getItems();
+      if (events == null || events.isEmpty()) {
+        return 0;
+      }
+      return (int)
+          events.stream()
+              .filter(
+                  e ->
+                      e.getStatus() == null
+                          || e.getStatus().phase() != ReleaseEventStatus.Phase.Published)
+              .count();
+    } catch (Exception ignored) {
+      return 0;
+    }
   }
 
   private static boolean promotedShape(Map<?, ?> status, String stableReplicaSet) {

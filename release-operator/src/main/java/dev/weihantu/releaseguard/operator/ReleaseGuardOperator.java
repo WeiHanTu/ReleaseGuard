@@ -14,8 +14,14 @@ public final class ReleaseGuardOperator {
 
     try {
       Operator operator = new Operator();
+      ReleaseEventReconciler eventReconciler = new ReleaseEventReconciler();
+      Runtime.getRuntime()
+          .addShutdownHook(
+              new Thread(eventReconciler::close, "releaseguard-event-publisher-shutdown"));
+
       operator.register(new ReleasePlanReconciler());
       operator.register(new ReleaseActionReconciler());
+      operator.register(eventReconciler);
       operator.installShutdownHook();
       operator.start();
       healthServer.markReady();

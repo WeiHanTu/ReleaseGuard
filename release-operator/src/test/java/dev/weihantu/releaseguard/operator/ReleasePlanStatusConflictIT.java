@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.weihantu.releaseguard.api.v1alpha1.ReleaseEvent;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlan;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanSpec;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanStatus;
@@ -223,6 +224,30 @@ class ReleasePlanStatusConflictIT {
         .v1()
         .customResourceDefinitions()
         .resource(releasePlanCrd)
+        .serverSideApply();
+    var releaseEventCrd =
+        CustomResourceDefinitionContext.v1CRDFromCustomResourceType(ReleaseEvent.class).build();
+    releaseEventCrd
+        .getSpec()
+        .getVersions()
+        .forEach(
+            version -> {
+              version.setSchema(
+                  new CustomResourceValidationBuilder()
+                      .withOpenAPIV3Schema(
+                          new JSONSchemaPropsBuilder()
+                              .withType("object")
+                              .withXKubernetesPreserveUnknownFields(true)
+                              .build())
+                      .build());
+              version.setSubresources(
+                  new CustomResourceSubresourcesBuilder().withNewStatus().endStatus().build());
+            });
+    client
+        .apiextensions()
+        .v1()
+        .customResourceDefinitions()
+        .resource(releaseEventCrd)
         .serverSideApply();
     client
         .load(new ByteArrayInputStream(ROLLOUT_CRD.getBytes(StandardCharsets.UTF_8)))

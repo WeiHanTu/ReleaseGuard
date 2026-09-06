@@ -23,14 +23,27 @@ import java.util.Objects;
 public final class ReleaseActionPlanner {
   private final ReleaseActionValidator validator;
   private final Clock clock;
+  private final int maxPendingOutboxEvents;
 
   public ReleaseActionPlanner() {
-    this(new ReleaseActionValidator(), Clock.systemUTC());
+    this(
+        new ReleaseActionValidator(),
+        Clock.systemUTC(),
+        ReleasePlanPlanner.defaultMaxPendingOutboxEvents(System.getenv()));
+  }
+
+  public ReleaseActionPlanner(int maxPendingOutboxEvents) {
+    this(new ReleaseActionValidator(), Clock.systemUTC(), maxPendingOutboxEvents);
   }
 
   ReleaseActionPlanner(ReleaseActionValidator validator, Clock clock) {
+    this(validator, clock, ReleasePlanPlanner.DEFAULT_MAX_PENDING_OUTBOX_EVENTS);
+  }
+
+  ReleaseActionPlanner(ReleaseActionValidator validator, Clock clock, int maxPendingOutboxEvents) {
     this.validator = Objects.requireNonNull(validator, "validator");
     this.clock = Objects.requireNonNull(clock, "clock");
+    this.maxPendingOutboxEvents = maxPendingOutboxEvents;
   }
 
   public record Result(ReleaseActionStatus status, Effect effect) {}
@@ -175,6 +188,20 @@ public final class ReleaseActionPlanner {
               Phase.Rejected,
               "InvalidSourcePhase",
               "Promote is only permitted from Paused, but release is in " + currentPhase,
+              Effect.None);
+        }
+        if (planStatus != null
+            && planStatus.pendingOutboxEvents() != null
+            && planStatus.pendingOutboxEvents() > maxPendingOutboxEvents) {
+          yield result(
+              action,
+              Phase.Rejected,
+              "AuditBackpressure",
+              "Promote is rejected while pending outbox events ("
+                  + planStatus.pendingOutboxEvents()
+                  + ") exceed configured bound ("
+                  + maxPendingOutboxEvents
+                  + ")",
               Effect.None);
         }
         ReleasePlanStatus.GateDecision gateDecision = planStatus.lastGateDecision();

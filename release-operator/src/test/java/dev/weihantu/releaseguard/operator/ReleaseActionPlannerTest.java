@@ -274,6 +274,68 @@ class ReleaseActionPlannerTest {
     return action;
   }
 
+  @Test
+  void promoteRejectedWhenAuditBackpressureActive() {
+    ReleaseAction action = action(ReleaseActionSpec.Type.Promote);
+    ReleasePlan plan =
+        planWithPhase(
+            ReleasePlanStatus.Phase.Paused,
+            new ReleasePlanStatus.GateDecision(
+                "Successful", "AnalysisRun/run-1", "2026-08-29T11:59:00Z"));
+    ReleasePlanStatus backpressuredStatus =
+        new ReleasePlanStatus(
+            GENERATION,
+            UID + ":" + GENERATION,
+            ReleasePlanStatus.Phase.Paused,
+            1,
+            "checkout-stable",
+            "checkout-canary",
+            null,
+            new ReleasePlanStatus.GateDecision(
+                "Successful", "AnalysisRun/run-1", "2026-08-29T11:59:00Z"),
+            null,
+            55, // exceeds 50
+            null);
+    plan.setStatus(backpressuredStatus);
+
+    ReleaseActionPlanner.Result result = planner.plan(action, plan);
+
+    assertEquals(Phase.Rejected, result.status().phase());
+    assertEquals("AuditBackpressure", result.status().reason());
+    assertEquals(ReleaseActionPlanner.Effect.None, result.effect());
+  }
+
+  @Test
+  void abortAllowedWhenAuditBackpressureActive() {
+    ReleaseAction action = action(ReleaseActionSpec.Type.Abort);
+    ReleasePlan plan =
+        planWithPhase(
+            ReleasePlanStatus.Phase.Paused,
+            new ReleasePlanStatus.GateDecision(
+                "Successful", "AnalysisRun/run-1", "2026-08-29T11:59:00Z"));
+    ReleasePlanStatus backpressuredStatus =
+        new ReleasePlanStatus(
+            GENERATION,
+            UID + ":" + GENERATION,
+            ReleasePlanStatus.Phase.Paused,
+            1,
+            "checkout-stable",
+            "checkout-canary",
+            null,
+            new ReleasePlanStatus.GateDecision(
+                "Successful", "AnalysisRun/run-1", "2026-08-29T11:59:00Z"),
+            null,
+            100, // exceeds 50
+            null);
+    plan.setStatus(backpressuredStatus);
+
+    ReleaseActionPlanner.Result result = planner.plan(action, plan);
+
+    assertEquals(Phase.Completed, result.status().phase());
+    assertEquals("ActionExecuted", result.status().reason());
+    assertEquals(ReleaseActionPlanner.Effect.AbortRollout, result.effect());
+  }
+
   private static ReleasePlan planWithPhase(
       ReleasePlanStatus.Phase phase, ReleasePlanStatus.GateDecision gateDecision) {
     ReleasePlan plan = new ReleasePlan();

@@ -15,7 +15,8 @@ record RolloutObservation(
     Abort abort,
     List<String> pauseReasons,
     StepAnalysis stepAnalysis,
-    StepAnalysis bootstrapAnalysis) {
+    StepAnalysis bootstrapAnalysis,
+    int pendingOutboxEvents) {
 
   static final String INCONCLUSIVE_ANALYSIS_PAUSE = "InconclusiveAnalysisRun";
 
@@ -24,6 +25,37 @@ record RolloutObservation(
     pauseReasons = pauseReasons == null ? List.of() : List.copyOf(pauseReasons);
     stepAnalysis = stepAnalysis == null ? StepAnalysis.NONE : stepAnalysis;
     bootstrapAnalysis = bootstrapAnalysis == null ? StepAnalysis.NONE : bootstrapAnalysis;
+  }
+
+  RolloutObservation(
+      boolean present,
+      boolean statusCurrent,
+      String argoPhase,
+      Integer currentStepIndex,
+      String stablePodHash,
+      String currentPodHash,
+      Integer desiredReplicas,
+      Integer readyReplicas,
+      boolean stableTrafficReady,
+      Abort abort,
+      List<String> pauseReasons,
+      StepAnalysis stepAnalysis,
+      StepAnalysis bootstrapAnalysis) {
+    this(
+        present,
+        statusCurrent,
+        argoPhase,
+        currentStepIndex,
+        stablePodHash,
+        currentPodHash,
+        desiredReplicas,
+        readyReplicas,
+        stableTrafficReady,
+        abort,
+        pauseReasons,
+        stepAnalysis,
+        bootstrapAnalysis,
+        0);
   }
 
   RolloutObservation(
@@ -48,11 +80,30 @@ record RolloutObservation(
         Abort.NONE,
         List.of(),
         StepAnalysis.NONE,
-        StepAnalysis.NONE);
+        StepAnalysis.NONE,
+        0);
   }
 
   static RolloutObservation missing() {
-    return new RolloutObservation(false, false, null, null, null, null, null, null);
+    return missing(0);
+  }
+
+  static RolloutObservation missing(int pendingOutboxEvents) {
+    return new RolloutObservation(
+        false,
+        false,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        false,
+        Abort.NONE,
+        List.of(),
+        StepAnalysis.NONE,
+        StepAnalysis.NONE,
+        pendingOutboxEvents);
   }
 
   boolean pausedByInconclusiveGate() {

@@ -65,7 +65,9 @@ final class ReleaseEventRenderer {
                     "delivery.weihantu.dev/release-name",
                     planName,
                     "delivery.weihantu.dev/release-generation",
-                    String.valueOf(generation)))
+                    String.valueOf(generation),
+                    ReleaseResourceRenderer.MANAGED_BY_LABEL,
+                    "releaseguard"))
             .withOwnerReferences(
                 new OwnerReferenceBuilder()
                     .withApiVersion("delivery.weihantu.dev/v1alpha1")

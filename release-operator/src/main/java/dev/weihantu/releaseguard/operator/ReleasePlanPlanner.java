@@ -28,6 +28,9 @@ import java.util.Map;
 import java.util.Objects;
 
 public final class ReleasePlanPlanner {
+  public static final int DEFAULT_MAX_PENDING_OUTBOX_EVENTS = 50;
+  public static final String MAX_PENDING_OUTBOX_EVENTS_ENV =
+      "RELEASEGUARD_MAX_PENDING_OUTBOX_EVENTS";
   private static final Duration IMMEDIATE_REQUEUE = Duration.ofMillis(1);
   // Rollback completion depends on Endpoints, which the operator does not watch.
   private static final Duration ROLLBACK_REQUEUE = Duration.ofSeconds(5);
@@ -36,6 +39,7 @@ public final class ReleasePlanPlanner {
   private final ReleaseResourceRenderer renderer;
   private final ReleasePhaseMachine phaseMachine;
   private final Clock clock;
+  private final int maxPendingOutboxEvents;
 
   public ReleasePlanPlanner() {
     this(
@@ -43,7 +47,18 @@ public final class ReleasePlanPlanner {
         new ReleaseResourceRenderer(
             MetricGateAnalysisConfiguration.fromEnvironment(System.getenv())),
         new ReleasePhaseMachine(),
-        Clock.systemUTC());
+        Clock.systemUTC(),
+        defaultMaxPendingOutboxEvents(System.getenv()));
+  }
+
+  public ReleasePlanPlanner(int maxPendingOutboxEvents) {
+    this(
+        new ReleasePlanValidator(),
+        new ReleaseResourceRenderer(
+            MetricGateAnalysisConfiguration.fromEnvironment(System.getenv())),
+        new ReleasePhaseMachine(),
+        Clock.systemUTC(),
+        maxPendingOutboxEvents);
   }
 
   ReleasePlanPlanner(
@@ -51,10 +66,31 @@ public final class ReleasePlanPlanner {
       ReleaseResourceRenderer renderer,
       ReleasePhaseMachine phaseMachine,
       Clock clock) {
+    this(validator, renderer, phaseMachine, clock, DEFAULT_MAX_PENDING_OUTBOX_EVENTS);
+  }
+
+  ReleasePlanPlanner(
+      ReleasePlanValidator validator,
+      ReleaseResourceRenderer renderer,
+      ReleasePhaseMachine phaseMachine,
+      Clock clock,
+      int maxPendingOutboxEvents) {
     this.validator = Objects.requireNonNull(validator, "validator");
     this.renderer = Objects.requireNonNull(renderer, "renderer");
     this.phaseMachine = Objects.requireNonNull(phaseMachine, "phaseMachine");
     this.clock = Objects.requireNonNull(clock, "clock");
+    this.maxPendingOutboxEvents = maxPendingOutboxEvents;
+  }
+
+  static int defaultMaxPendingOutboxEvents(Map<String, String> env) {
+    if (env != null && env.containsKey(MAX_PENDING_OUTBOX_EVENTS_ENV)) {
+      try {
+        return Integer.parseInt(env.get(MAX_PENDING_OUTBOX_EVENTS_ENV));
+      } catch (NumberFormatException ignored) {
+        // Fall back to default
+      }
+    }
+    return DEFAULT_MAX_PENDING_OUTBOX_EVENTS;
   }
 
   public ReconciliationPlan plan(
@@ -143,7 +179,13 @@ public final class ReleasePlanPlanner {
       Map<String, MetricPolicySnapshot> acceptedPolicies,
       RolloutObservation observation) {
     ReleasePlanSpec spec = plan.getSpec();
-    Phase phase = projectedPhase(currentPhase, observation, spec, current);
+    int pendingOutbox =
+        observation.pendingOutboxEvents() > 0
+            ? observation.pendingOutboxEvents()
+            : (current != null && current.pendingOutboxEvents() != null
+                ? current.pendingOutboxEvents()
+                : 0);
+    Phase phase = projectedPhase(currentPhase, observation, spec, current, pendingOutbox);
     phaseMachine.requireTransition(currentPhase, phase);
     String stableRevision = current.stableRevision();
     String canaryRevision = current.canaryRevision();
@@ -153,6 +195,7 @@ public final class ReleasePlanPlanner {
             ? observation.bootstrapAnalysis()
             : observation.stepAnalysis();
     ReleasePlanStatus.GateDecision gateDecision = gateDecision(current, observation, gate);
+    boolean auditBackpressure = pendingOutbox > maxPendingOutboxEvents;
     String reason;
     String message;
 
@@ -166,13 +209,21 @@ public final class ReleasePlanPlanner {
       stableRevision = qualifiedRevision(identity.name(), observation.stablePodHash());
       canaryRevision = candidateRevision(identity.name(), observation);
       currentStep = logicalStep(observation.currentStepIndex(), spec);
-      reason = observationReason(currentPhase, phase, observation, gateDecision);
-      message = observationMessage(currentPhase, phase, observation, gateDecision);
+      reason = observationReason(currentPhase, phase, observation, gateDecision, auditBackpressure);
+      message = observationMessage(currentPhase, phase, observation, gateDecision, reason);
     }
     if (currentPhase == Phase.Bootstrapping && phase == Phase.Succeeded) {
       // RG-BOOT-004: the admitted bootstrap candidate becomes the first stable revision.
       canaryRevision = null;
     }
+
+    ReleasePlanStatus.Transition transition = transition(current, identity, currentPhase, phase);
+    boolean isNewTransition =
+        transition != null
+            && (current == null
+                || current.lastTransition() == null
+                || !transition.eventId().equals(current.lastTransition().eventId()));
+    int finalPending = pendingOutbox + (isNewTransition ? 1 : 0);
 
     ReleasePlanStatus status =
         status(
@@ -184,6 +235,7 @@ public final class ReleasePlanPlanner {
             stableRevision,
             canaryRevision,
             gateDecision,
+            finalPending,
             reason,
             message);
     return new ReconciliationPlan(
@@ -256,21 +308,33 @@ public final class ReleasePlanPlanner {
       Phase currentPhase,
       RolloutObservation observation,
       ReleasePlanSpec spec,
-      ReleasePlanStatus current) {
+      ReleasePlanStatus current,
+      int pendingOutboxEvents) {
     if (!observation.present() || !observation.statusCurrent()) {
       return currentPhase;
     }
     if (observation.abort().requested()) {
       return abortedPhase(currentPhase, observation, spec, current);
     }
-    if (currentPhase == Phase.RollingBack || currentPhase == Phase.Paused) {
-      if (currentPhase == Phase.RollingBack) {
-        if (observation.rollbackComplete()) {
-          return Phase.RolledBack;
-        }
-        if (rollbackDeadlineExceeded(current, spec)) {
-          return Phase.Failed;
-        }
+    if (currentPhase == Phase.RollingBack) {
+      if (observation.rollbackComplete()) {
+        return Phase.RolledBack;
+      }
+      if (rollbackDeadlineExceeded(current, spec)) {
+        return Phase.Failed;
+      }
+      return currentPhase;
+    }
+    boolean auditBackpressure = pendingOutboxEvents > maxPendingOutboxEvents;
+    if (currentPhase == Phase.Paused) {
+      if (auditBackpressure) {
+        return Phase.Paused;
+      }
+      if ("AuditBackpressure".equals(currentReason(current))
+          && !observation.pausedByInconclusiveGate()
+          && !"Paused".equals(observation.argoPhase())
+          && !"Suspended".equals(observation.argoPhase())) {
+        return Phase.Progressing;
       }
       return currentPhase;
     }
@@ -278,7 +342,10 @@ public final class ReleasePlanPlanner {
       return currentPhase == Phase.Bootstrapping ? Phase.Failed : currentPhase;
     }
     if (currentPhase == Phase.Bootstrapping) {
-      return bootstrapPhase(observation);
+      return bootstrapPhase(observation, auditBackpressure);
+    }
+    if (auditBackpressure) {
+      return Phase.Paused;
     }
     if (observation.pausedByInconclusiveGate()
         || "Paused".equals(observation.argoPhase())
@@ -296,10 +363,10 @@ public final class ReleasePlanPlanner {
    * fails it closed, while inconclusive evidence or a provider error leaves it unadmitted rather
    * than promoting or claiming a rollback it cannot perform.
    */
-  private static Phase bootstrapPhase(RolloutObservation observation) {
+  private static Phase bootstrapPhase(RolloutObservation observation, boolean auditBackpressure) {
     RolloutObservation.StepAnalysis gate = observation.bootstrapAnalysis();
     if (gate.successful()) {
-      return Phase.Succeeded;
+      return auditBackpressure ? Phase.Bootstrapping : Phase.Succeeded;
     }
     if ("Failed".equals(gate.phase())) {
       return Phase.Failed;
@@ -384,11 +451,12 @@ public final class ReleasePlanPlanner {
     return remaining.compareTo(ROLLBACK_REQUEUE) < 0 ? remaining : ROLLBACK_REQUEUE;
   }
 
-  private static String observationReason(
+  private String observationReason(
       Phase currentPhase,
       Phase phase,
       RolloutObservation observation,
-      ReleasePlanStatus.GateDecision gateDecision) {
+      ReleasePlanStatus.GateDecision gateDecision,
+      boolean auditBackpressure) {
     if (phase == Phase.Succeeded) {
       if (currentPhase == Phase.Bootstrapping) {
         return "BootstrapGatePassed";
@@ -412,6 +480,9 @@ public final class ReleasePlanPlanner {
       }
     }
     if (currentPhase == Phase.Bootstrapping) {
+      if (auditBackpressure && observation.bootstrapAnalysis().successful()) {
+        return "AuditBackpressure";
+      }
       return bootstrapReason(observation);
     }
     if (phase == Phase.RolledBack) {
@@ -419,6 +490,9 @@ public final class ReleasePlanPlanner {
     }
     if (phase == Phase.RollingBack) {
       return failedGate(observation, gateDecision) ? "GateFailedRollback" : "RolloutAbortObserved";
+    }
+    if (auditBackpressure) {
+      return "AuditBackpressure";
     }
     if (observation.pausedByInconclusiveGate()) {
       return "GateInconclusivePause";
@@ -461,7 +535,11 @@ public final class ReleasePlanPlanner {
       Phase currentPhase,
       Phase phase,
       RolloutObservation observation,
-      ReleasePlanStatus.GateDecision gateDecision) {
+      ReleasePlanStatus.GateDecision gateDecision,
+      String reason) {
+    if ("AuditBackpressure".equals(reason)) {
+      return "Pending outbox events exceed configured bound; promotion paused";
+    }
     if (phase == Phase.Succeeded) {
       if (currentPhase == Phase.Bootstrapping) {
         return "The absolute bootstrap gate passed and the candidate became the stable revision";
@@ -569,8 +647,41 @@ public final class ReleasePlanPlanner {
       ReleasePlanStatus.GateDecision gateDecision,
       String reason,
       String message) {
+    return status(
+        current,
+        identity,
+        currentPhase,
+        phase,
+        currentStep,
+        stableRevision,
+        canaryRevision,
+        gateDecision,
+        sameGeneration(current, identity.generation()) ? current.pendingOutboxEvents() : null,
+        reason,
+        message);
+  }
+
+  private ReleasePlanStatus status(
+      ReleasePlanStatus current,
+      ReleaseResourceRenderer.Identity identity,
+      Phase currentPhase,
+      Phase phase,
+      Integer currentStep,
+      String stableRevision,
+      String canaryRevision,
+      ReleasePlanStatus.GateDecision gateDecision,
+      Integer pendingOutboxEvents,
+      String reason,
+      String message) {
     List<Condition> conditions =
-        conditions(current, identity.generation(), phase, gateDecision, reason, message);
+        conditions(
+            current,
+            identity.generation(),
+            phase,
+            gateDecision,
+            pendingOutboxEvents,
+            reason,
+            message);
     ReleasePlanStatus.Transition transition = transition(current, identity, currentPhase, phase);
     return new ReleasePlanStatus(
         identity.generation(),
@@ -587,7 +698,7 @@ public final class ReleasePlanPlanner {
             : null,
         gateDecision,
         transition,
-        sameGeneration(current, identity.generation()) ? current.pendingOutboxEvents() : null,
+        pendingOutboxEvents,
         conditions);
   }
 
@@ -650,6 +761,7 @@ public final class ReleasePlanPlanner {
       long generation,
       Phase phase,
       ReleasePlanStatus.GateDecision gateDecision,
+      Integer pendingOutboxEvents,
       String reason,
       String message) {
     List<Condition> conditions = new ArrayList<>();
@@ -663,14 +775,7 @@ public final class ReleasePlanPlanner {
             reason,
             message));
     conditions.add(gateCondition(current, generation, gateDecision));
-    conditions.add(
-        condition(
-            current,
-            "AuditHealthy",
-            "Unknown",
-            generation,
-            "AuditPipelinePending",
-            "The durable audit pipeline is not implemented yet"));
+    conditions.add(auditCondition(current, generation, pendingOutboxEvents));
     conditions.add(
         condition(
             current,
@@ -679,12 +784,64 @@ public final class ReleasePlanPlanner {
                     || phase == Phase.RollingBack
                     || "ArgoRolloutDegraded".equals(reason)
                     || "BootstrapGateInconclusive".equals(reason)
+                    || "AuditBackpressure".equals(reason)
                 ? "True"
                 : "False",
             generation,
             reason,
             message));
     return List.copyOf(conditions);
+  }
+
+  private Condition auditCondition(
+      ReleasePlanStatus current, long generation, Integer pendingOutboxEvents) {
+    if (pendingOutboxEvents == null) {
+      return condition(
+          current,
+          "AuditHealthy",
+          "Unknown",
+          generation,
+          "AuditPipelinePending",
+          "The durable audit pipeline is not implemented yet");
+    }
+    if (pendingOutboxEvents > maxPendingOutboxEvents) {
+      return condition(
+          current,
+          "AuditHealthy",
+          "False",
+          generation,
+          "AuditBackpressure",
+          "Pending outbox events ("
+              + pendingOutboxEvents
+              + ") exceed configured bound ("
+              + maxPendingOutboxEvents
+              + ")");
+    }
+    return condition(
+        current,
+        "AuditHealthy",
+        "True",
+        generation,
+        "AuditStreamHealthy",
+        "Pending outbox events ("
+            + pendingOutboxEvents
+            + ") within configured bound ("
+            + maxPendingOutboxEvents
+            + ")");
+  }
+
+  private static String currentReason(ReleasePlanStatus current) {
+    if (current == null || current.conditions() == null) {
+      return null;
+    }
+    for (Condition condition : current.conditions()) {
+      if ("Progressing".equals(condition.getType()) || "AuditHealthy".equals(condition.getType())) {
+        if ("AuditBackpressure".equals(condition.getReason())) {
+          return "AuditBackpressure";
+        }
+      }
+    }
+    return null;
   }
 
   private Condition gateCondition(
