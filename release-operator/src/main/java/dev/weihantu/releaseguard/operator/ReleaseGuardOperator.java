@@ -1,5 +1,6 @@
 package dev.weihantu.releaseguard.operator;
 
+import io.fabric8.kubernetes.client.KubernetesClient;
 import io.javaoperatorsdk.operator.Operator;
 import java.io.IOException;
 
@@ -13,7 +14,8 @@ public final class ReleaseGuardOperator {
         .addShutdownHook(new Thread(healthServer::close, "releaseguard-health-shutdown"));
 
     try {
-      Operator operator = new Operator();
+      LeaderElectionPolicy leaderElectionPolicy = LeaderElectionPolicy.fromEnvironment();
+      Operator operator = createOperator(null, leaderElectionPolicy);
       ReleaseEventReconciler eventReconciler = new ReleaseEventReconciler();
       Runtime.getRuntime()
           .addShutdownHook(
@@ -29,5 +31,18 @@ public final class ReleaseGuardOperator {
       healthServer.close();
       throw exception;
     }
+  }
+
+  static Operator createOperator(
+      KubernetesClient client, LeaderElectionPolicy leaderElectionPolicy) {
+    return new Operator(
+        overrider -> {
+          if (client != null) {
+            overrider.withKubernetesClient(client).withCloseClientOnStop(false);
+          }
+          leaderElectionPolicy
+              .toConfiguration()
+              .ifPresent(overrider::withLeaderElectionConfiguration);
+        });
   }
 }

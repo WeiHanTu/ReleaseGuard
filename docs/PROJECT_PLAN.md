@@ -625,8 +625,10 @@ Exit achieved: deleting and rebuilding the projection yields the same release hi
 
 - Add OpenTelemetry, dashboards, alerts, and runbooks.
 - Automate the failure-drill matrix.
-- Add multi-replica operator leadership behavior.
+- Add multi-replica operator leadership behavior (implemented via Kubernetes Lease leader election in `release-operator` and Helm chart; `RG-REC-007`, `RG-REC-008`, ADR 0009).
 - Write the first incident postmortem from an actual failed drill.
+
+Implemented evidence: `release-operator` implements active-passive leader election using Kubernetes `coordination.k8s.io/v1` `Lease` resources (`RG-REC-008`, ADR 0009). Standby replicas maintain readiness via `OperatorHealthServer` while withholding controller informers until lease acquisition. Real-cluster multi-replica integration testing (`ReleaseOperatorLeaderElectionIT`) proves active leadership acquisition, standby non-interference during concurrent execution, and clean failover upon leader termination (`RG-REC-007`). The Helm chart (`charts/releaseguard`) grants explicit `coordination.k8s.io/leases` RBAC, sets `RollingUpdate` deployment strategy (`maxSurge: 1`, `maxUnavailable: 0`), lifts the single-replica schema restriction (`replicaCount >= 1`), and enforces a fail-closed template guard if `replicaCount > 1` is attempted with leader election disabled.
 
 Exit: all critical failures are observable and produce a documented safe or explicitly failed state.
 

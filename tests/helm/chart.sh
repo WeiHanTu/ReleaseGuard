@@ -41,7 +41,9 @@ for crd in "${REPOSITORY_ROOT}"/config/crd/*.yml; do
 done
 
 grep -Fq 'kind: Deployment' "${default_manifest}"
-grep -Fq 'type: Recreate' "${default_manifest}"
+grep -Fq 'type: RollingUpdate' "${default_manifest}"
+grep -Fq 'maxSurge: 1' "${default_manifest}"
+grep -Fq 'maxUnavailable: 0' "${default_manifest}"
 grep -Fq 'replicas: 1' "${default_manifest}"
 grep -Fq 'runAsNonRoot: true' "${default_manifest}"
 grep -Fq 'runAsUser: 65532' "${default_manifest}"
@@ -50,6 +52,7 @@ grep -Fq 'allowPrivilegeEscalation: false' "${default_manifest}"
 grep -Fq 'type: RuntimeDefault' "${default_manifest}"
 grep -Fq 'path: /healthz' "${default_manifest}"
 grep -Fq 'path: /readyz' "${default_manifest}"
+grep -Fq 'resources: ["leases"]' "${default_manifest}"
 grep -Fq 'resources: ["releaseplans/status"]' "${default_manifest}"
 grep -Fq 'resources: ["releaseactions/status"]' "${default_manifest}"
 grep -Fq 'resources: ["releaseevents/status"]' "${default_manifest}"
@@ -57,6 +60,10 @@ grep -Fq 'resources: ["metricpolicies"]' "${default_manifest}"
 grep -Fq 'resources: ["rollouts/status"]' "${default_manifest}"
 grep -Fq 'resources: ["analysistemplates"]' "${default_manifest}"
 grep -Fq 'resources: ["analysisruns"]' "${default_manifest}"
+grep -Fq 'name: RELEASEGUARD_LEADER_ELECTION_ENABLED' "${default_manifest}"
+grep -Fq 'name: RELEASEGUARD_LEASE_NAME' "${default_manifest}"
+grep -Fq 'name: POD_NAMESPACE' "${default_manifest}"
+grep -Fq 'name: POD_NAME' "${default_manifest}"
 grep -Fq 'name: RELEASEGUARD_ANALYSIS_GATE_URL' "${default_manifest}"
 grep -Fq 'value: "http://releaseguard-metric-gate.releaseguard-system.svc.cluster.local:8080/internal/v1/evaluations"' "${default_manifest}"
 grep -Fq 'name: RELEASEGUARD_ANALYSIS_AUTH_SECRET_NAME' "${default_manifest}"
@@ -85,11 +92,27 @@ if grep -Eq 'verbs:.*\*|resources:.*\*|apiGroups:.*\*' "${default_manifest}"; th
   exit 1
 fi
 
-if "${helm_bin}" template releaseguard "${CHART}" --set replicaCount=2 \
+multi_replica_manifest="${temporary_directory}/multi-replica.yaml"
+"${helm_bin}" template releaseguard "${CHART}" \
+  --namespace releaseguard-system \
+  --set replicaCount=2 >"${multi_replica_manifest}"
+grep -Fq 'replicas: 2' "${multi_replica_manifest}"
+grep -Fq 'type: RollingUpdate' "${multi_replica_manifest}"
+
+recreate_manifest="${temporary_directory}/disabled-leader-election.yaml"
+"${helm_bin}" template releaseguard "${CHART}" \
+  --namespace releaseguard-system \
+  --set operator.leaderElection.enabled=false >"${recreate_manifest}"
+grep -Fq 'type: Recreate' "${recreate_manifest}"
+
+if "${helm_bin}" template releaseguard "${CHART}" \
+  --set replicaCount=2 \
+  --set operator.leaderElection.enabled=false \
   >"${temporary_directory}/invalid-replicas.out" 2>&1; then
-  echo "Chart accepted replicaCount=2 without leader election" >&2
+  echo "Chart accepted replicaCount=2 with operator.leaderElection.enabled=false" >&2
   exit 1
 fi
+grep -Fq "replicaCount > 1 requires operator.leaderElection.enabled=true" "${temporary_directory}/invalid-replicas.out"
 
 if "${helm_bin}" template releaseguard "${CHART}" \
   --set serviceAccount.create=false --set-string serviceAccount.name= \

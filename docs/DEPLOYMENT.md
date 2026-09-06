@@ -33,7 +33,7 @@ The checksum-pinned installer provides Helm v4.2.4. The chart test verifies sche
 
 Helm installs `crds/` before the templates but does not upgrade CRDs that already exist. After an API change, `./gradlew :api-model:syncCrds` refreshes both `config/crd/` and the chart copy; review the diff and apply `config/crd/` before upgrading an existing release.
 
-The chart deliberately accepts exactly one operator replica and uses `Recreate` upgrades for that Deployment. Running overlapping reconcilers before leader election would be unsafe. The current operator watches all namespaces, so the chart uses a `ClusterRole`; its negative Kind checks prove that this identity cannot read Secrets or delete Namespaces.
+The operator supports active-passive high availability via Kubernetes Lease leader election (ADR 0009, RG-REC-007, RG-REC-008). By default, `operator.leaderElection.enabled` is true, enabling zero-downtime `RollingUpdate` deployments across multiple replicas (`replicaCount >= 1`). If leader election is disabled, `replicaCount` is restricted to 1 with `Recreate` strategy. The current operator watches all namespaces, so the chart uses a `ClusterRole`; its negative Kind checks prove that this identity cannot read Secrets or delete Namespaces.
 
 ## Clean-cluster proof
 

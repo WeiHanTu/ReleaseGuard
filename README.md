@@ -99,7 +99,7 @@ RELEASEGUARD_GATE_IMAGE=releaseguard-metric-gate:dev ./tests/container/metric-ga
 ./tests/e2e/kind-gitops.sh
 ```
 
-On Docker Desktop 28.4.0 for `linux/arm64`, the operator image measured 86,672,799 bytes with 24,131,372 application-layer bytes; the metric-gate image measured 99,798,482 bytes with 37,257,055 application-layer bytes. These are packaging observations, not performance benchmarks. The chart enforces one operator replica and a `Recreate` deployment strategy because leader election is not implemented.
+On Docker Desktop 28.4.0 for `linux/arm64`, the operator image measured 86,672,799 bytes with 24,131,372 application-layer bytes; the metric-gate image measured 99,798,482 bytes with 37,257,055 application-layer bytes. These are packaging observations, not performance benchmarks. Active-passive operator leader election is supported via Kubernetes Lease coordination (ADR 0009, RG-REC-007, RG-REC-008) with zero-downtime `RollingUpdate` upgrades across multiple replicas.
 
 Example resources are under [`config/examples`](config/examples), the Git-authored local environment under [`environments/local`](environments/local), and accepted architecture decisions under [`docs/adr`](docs/adr). See [`docs/GITOPS.md`](docs/GITOPS.md) for the ownership model and test procedure.
 

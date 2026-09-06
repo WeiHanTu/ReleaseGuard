@@ -6,8 +6,8 @@
   "properties": {
     "replicaCount": {
       "type": "integer",
-      "enum": [1],
-      "description": "Exactly one replica is required until leader election is implemented."
+      "minimum": 1,
+      "description": "Number of operator replicas. Values > 1 require operator.leaderElection.enabled=true."
     },
     "image": {
       "type": "object",
@@ -46,9 +46,23 @@
     "operator": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["healthPort", "analysis", "cleanup"],
+      "required": ["healthPort", "leaderElection", "analysis", "cleanup"],
       "properties": {
         "healthPort": {"type": "integer", "minimum": 1024, "maximum": 65535},
+        "leaderElection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "leaseName"],
+          "properties": {
+            "enabled": {"type": "boolean"},
+            "leaseName": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+              "minLength": 1,
+              "maxLength": 253
+            }
+          }
+        },
         "analysis": {
           "type": "object",
           "additionalProperties": false,

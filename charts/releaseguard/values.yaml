@@ -20,6 +20,9 @@ podLabels: {}
 
 operator:
   healthPort: 8081
+  leaderElection:
+    enabled: true
+    leaseName: releaseguard-operator-lock
   analysis:
     evaluationUrl: ""
     auth:

@@ -1,6 +1,10 @@
 ReleaseGuard operator {{ .Chart.AppVersion }} was installed in {{ .Release.Namespace }}.
 
-The chart intentionally permits exactly one operator replica. Leader election is not implemented yet.
+{{- if .Values.operator.leaderElection.enabled }}
+Leader election is enabled with Lease lock {{ .Values.operator.leaderElection.leaseName }}. Multi-replica high availability is active.
+{{- else }}
+Leader election is disabled; replicaCount must remain 1 to prevent split-brain reconciliation.
+{{- end }}
 For release environments, set image.digest to the published sha256 digest instead of relying on a tag.
 {{- if .Values.metricGate.enabled }}
 
