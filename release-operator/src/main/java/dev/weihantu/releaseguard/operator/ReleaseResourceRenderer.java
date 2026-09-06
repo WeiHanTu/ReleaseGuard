@@ -87,7 +87,7 @@ public final class ReleaseResourceRenderer {
         throw new IllegalArgumentException(
             "accepted policy snapshot is missing for " + gate.policyRef());
       }
-      metrics.add(analysisMetric(identity, gate, snapshot, index));
+      metrics.add(analysisMetric(identity, releaseSpec, gate, snapshot, index));
     }
 
     List<Map<String, Object>> args = new ArrayList<>();
@@ -138,7 +138,7 @@ public final class ReleaseResourceRenderer {
         throw new IllegalArgumentException(
             "accepted policy snapshot is missing for " + gate.policyRef());
       }
-      metrics.add(analysisMetric(identity, gate, snapshot, index));
+      metrics.add(analysisMetric(identity, spec, gate, snapshot, index));
     }
     if (metrics.isEmpty()) {
       throw new IllegalArgumentException("bootstrap analysis requires one absolute canary gate");
@@ -188,7 +188,11 @@ public final class ReleaseResourceRenderer {
   }
 
   private Map<String, Object> analysisMetric(
-      Identity identity, ReleasePlanSpec.Gate gate, MetricPolicySnapshot snapshot, int index) {
+      Identity identity,
+      ReleasePlanSpec releaseSpec,
+      ReleasePlanSpec.Gate gate,
+      MetricPolicySnapshot snapshot,
+      int index) {
     MetricPolicySpec policy = snapshot.spec();
     Map<String, Object> web = new LinkedHashMap<>();
     web.put("url", analysisConfiguration.evaluationUrl().toString());
@@ -207,6 +211,7 @@ public final class ReleaseResourceRenderer {
 
     Map<String, Object> metric = new LinkedHashMap<>();
     metric.put("name", metricName(index, gate.policyRef()));
+    metric.put("count", metricCount(releaseSpec, gate, policy));
     metric.put("interval", policy.interval());
     // The first measurement must observe a full post-shift window; a shorter delay would judge the
     // candidate on stable-only samples and burn the inconclusive budget.
@@ -219,6 +224,42 @@ public final class ReleaseResourceRenderer {
     metric.put("failureCondition", "result == \"Fail\"");
     metric.put("provider", Map.of("web", web));
     return Map.copyOf(metric);
+  }
+
+  private static int metricCount(
+      ReleasePlanSpec spec, ReleasePlanSpec.Gate gate, MetricPolicySpec policy) {
+    int minMeasurements =
+        Math.max(
+            gate.consecutiveSuccesses() == null ? 1 : gate.consecutiveSuccesses(),
+            Math.max(
+                gate.failureLimit() == null ? 1 : gate.failureLimit(),
+                gate.inconclusiveLimit() == null ? 1 : gate.inconclusiveLimit()));
+
+    long longestStepSeconds = 0L;
+    if (spec != null && spec.rollout() != null && spec.rollout().steps() != null) {
+      longestStepSeconds =
+          spec.rollout().steps().stream()
+              .filter(step -> step != null && step.weight() < TERMINAL_WEIGHT)
+              .map(ReleasePlanSpec.Step::duration)
+              .filter(Objects::nonNull)
+              .map(KubernetesDuration::parse)
+              .flatMap(Optional::stream)
+              .mapToLong(Duration::toSeconds)
+              .max()
+              .orElse(0L);
+    }
+
+    long windowSeconds =
+        KubernetesDuration.parse(policy.window()).map(Duration::toSeconds).orElse(0L);
+    long intervalSeconds =
+        KubernetesDuration.parse(policy.interval()).map(Duration::toSeconds).orElse(0L);
+
+    if (longestStepSeconds > 0 && intervalSeconds > 0 && longestStepSeconds >= windowSeconds) {
+      long durationMeasurements = 1 + (longestStepSeconds - windowSeconds) / intervalSeconds;
+      return Math.toIntExact(Math.max(minMeasurements, durationMeasurements));
+    }
+
+    return Math.max(1, minMeasurements);
   }
 
   private static Map<String, Object> evaluationBody(

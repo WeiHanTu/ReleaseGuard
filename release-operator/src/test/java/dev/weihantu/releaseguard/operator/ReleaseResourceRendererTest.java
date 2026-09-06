@@ -170,6 +170,7 @@ class ReleaseResourceRendererTest {
     assertFalse(tokenArg.containsKey("value"));
 
     Map<?, ?> metric = map(list(spec.get("metrics")).getFirst());
+    assertEquals(10, metric.get("count"));
     assertEquals(3, metric.get("failureLimit"));
     assertEquals(2, metric.get("consecutiveSuccessLimit"));
     assertEquals(3, metric.get("inconclusiveLimit"));
@@ -259,6 +260,7 @@ class ReleaseResourceRendererTest {
     assertEquals(1, metrics.size());
     Map<?, ?> metric = map(metrics.getFirst());
     assertEquals("gate-0-http-errors", metric.get("name"));
+    assertEquals(10, metric.get("count"));
     assertEquals(OperatorTestFixtures.policy().window(), metric.get("initialDelay"));
     Map<?, ?> body = map(map(map(metric.get("provider")).get("web")).get("jsonBody"));
     assertEquals("{{ args.mode }}", body.get("mode"));
@@ -296,6 +298,32 @@ class ReleaseResourceRendererTest {
         () ->
             renderer.renderBootstrapAnalysis(
                 baselineOnly, OperatorTestFixtures.policies(), "candidate-hash"));
+  }
+
+  @Test
+  void rendersMeasurementCountBoundedByLongestStepDuration() {
+    var plan = OperatorTestFixtures.plan(7);
+    plan.setSpec(
+        new ReleasePlanSpec(
+            plan.getSpec().workload(),
+            plan.getSpec().network(),
+            new ReleasePlanSpec.Rollout(
+                List.of(
+                    new ReleasePlanSpec.Step(5, "3m"),
+                    new ReleasePlanSpec.Step(25, "10m"),
+                    new ReleasePlanSpec.Step(100, null)),
+                plan.getSpec().rollout().gates()),
+            plan.getSpec().failurePolicy(),
+            plan.getSpec().deletionPolicy()));
+
+    GenericKubernetesResource template =
+        assertInstanceOf(
+            GenericKubernetesResource.class,
+            renderer.render(plan, OperatorTestFixtures.policies()).get(3));
+    Map<?, ?> spec = map(template.getAdditionalProperties().get("spec"));
+    Map<?, ?> metric = map(list(spec.get("metrics")).getFirst());
+    // Longest step = 10m (600s), window = 2m (120s), interval = 20s -> 1 + (600 - 120) / 20 = 25
+    assertEquals(25, metric.get("count"));
   }
 
   private static ReleasePlanSpec withGates(

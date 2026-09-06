@@ -624,7 +624,7 @@ In bootstrap mode, `stableRevision` is absent, the baseline predicate is recorde
 - `RG-GATE-010`: Prometheus unavailability MUST pause the rollout after the configured AnalysisRun inconclusive limit; it MUST NOT promote or automatically roll back solely because monitoring disappeared.
 - `RG-GATE-011`: Bootstrap mode MUST evaluate at least one absolute gate and MUST NOT fabricate or reuse a stable baseline.
 - `RG-GATE-012`: `failureLimit` MUST mean total failed measurements, `consecutiveSuccesses` MUST mean consecutive successful measurements, and `inconclusiveLimit` MUST mean total inconclusive measurements, matching the pinned Argo Rollouts API.
-- `RG-GATE-013`: A generated metric MUST NOT declare a measurement count. Argo assesses an exhausted count as successful, and automatic promotion MUST require an explicit consecutive-success streak instead.
+- `RG-GATE-013`: A generated metric MUST declare a measurement count bounded by the step duration, satisfying Argo Rollouts inline analysis validation while preserving streak-based promotion (as reaching count without meeting consecutiveSuccessLimit is assessed Inconclusive).
 
 ## 16. Event and audit specification
 
