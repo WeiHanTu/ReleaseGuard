@@ -612,12 +612,14 @@ Exit pending: no clean-cluster run has yet driven a good and a bad release throu
 
 ### Week 5: Kafka and audit API
 
-- Define versioned event schema and compatibility tests.
-- Persist lifecycle transitions through the `ReleaseEvent` outbox and publish them at least once.
-- Build idempotent PostgreSQL projection and history endpoints.
-- Add replay and duplicate-delivery tests.
+- [x] Define versioned event schema and compatibility tests.
+- [x] Persist lifecycle transitions through the `ReleaseEvent` outbox and publish them at least once.
+- [x] Build idempotent PostgreSQL projection and history endpoints.
+- [x] Add replay and duplicate-delivery tests.
 
-Exit: deleting and rebuilding the projection yields the same release history.
+Implemented evidence: `release-operator` renders immutable `ReleaseEvent` outbox resources via server-side apply (`RG-OUT-001`), versioned under `EventEnvelope` (`schemaVersion = 1`, `RG-OUT-002`, `RG-OUT-005`), and publishes them to Kafka with producer idempotence (`acks=all`, `enable.idempotence=true`) keyed by release UID (`RG-OUT-003`, `RG-OUT-004`). `ReleaseEventReconciler` applies exponential backoff with jitter up to 60 seconds on transport errors (`RG-OUT-009`), and audit backpressure pauses progressive delivery without impeding abort or rollback (`RG-OUT-008`, `RG-FAIL-002`, `RG-FAIL-003`). `release-history-api` consumes Kafka events and projects them into PostgreSQL within a single transaction (`RG-AUD-002`), enforces deduplication as a no-op (`RG-AUD-003`), quarantines out-of-order and sequence regressions with metric tracking (`RG-AUD-004`), exposes OpenAPI 3.0-defined endpoints (`RG-HTTP-001`), cursor pagination (`RG-HTTP-004`), structured error codes (`RG-HTTP-005`), and freshness metadata (`RG-AUD-006`, `RG-HTTP-007`), and validates idempotency keys and authenticated actors for mutating operational actions (`RG-HTTP-002`). Replaying stored event streams across projection deletions produces byte-identical reconstructed release state (`RG-AUD-005`).
+
+Exit achieved: deleting and rebuilding the projection yields the same release history.
 
 ### Week 6: resilience and observability
 

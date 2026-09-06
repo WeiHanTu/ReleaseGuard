@@ -1,0 +1,37 @@
+spring:
+  application:
+    name: releaseguard-history-api
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:releaseguard_audit}}
+    username: ${SPRING_DATASOURCE_USERNAME:${DB_USER:releaseguard}}
+    password: ${SPRING_DATASOURCE_PASSWORD:${DB_PASSWORD:releaseguard}}
+    driver-class-name: ${SPRING_DATASOURCE_DRIVER_CLASS_NAME:org.postgresql.Driver}
+  flyway:
+    enabled: true
+  servlet:
+    multipart:
+      max-file-size: 1MB
+      max-request-size: 1MB
+
+server:
+  port: ${SERVER_PORT:8082}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+releaseguard:
+  history:
+    kafka:
+      enabled: ${RELEASEGUARD_KAFKA_ENABLED:false}
+      bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:${RELEASEGUARD_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}}
+      topic: ${KAFKA_TOPIC:deployment-events.v1}
+      group-id: ${KAFKA_GROUP_ID:releaseguard-history-projection}
+    stale-threshold-seconds: 300

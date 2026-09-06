@@ -1,0 +1,699 @@
+openapi: 3.0.3
+info:
+  title: ReleaseGuard External REST API
+  description: External REST API contract for ReleaseGuard progressive delivery, audit history, and operational actions (spec.md §17, RG-HTTP-001).
+  version: 1.0.0
+paths:
+  /v1/plans:validate:
+    post:
+      summary: Validate a ReleasePlan without cluster mutation
+      operationId: validatePlan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlanValidationRequest'
+      responses:
+        '200':
+          description: Validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanValidationResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+
+  /v1/plans:render:
+    post:
+      summary: Return generated Kubernetes resources without applying them
+      operationId: renderPlan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlanRenderRequest'
+      responses:
+        '200':
+          description: Rendered resources
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlanRenderResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+
+  /v1/releases/{namespace}/{name}:
+    get:
+      summary: Get current release summary and projection freshness
+      operationId: getRelease
+      parameters:
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Current release projection and freshness metadata
+          headers:
+            X-Projected-Through:
+              schema:
+                type: string
+                format: date-time
+              description: Timestamp through which the projection has processed events
+            X-Kafka-Offset:
+              schema:
+                type: integer
+              description: Highest Kafka offset processed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReleaseResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /v1/releases/{namespace}/{name}/events:
+    get:
+      summary: Get paginated audit history for a release
+      operationId: getEvents
+      parameters:
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 100
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Paginated event history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventListResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /v1/releases/{namespace}/{name}/evidence:
+    get:
+      summary: Get gate evidence metadata and digests
+      operationId: getEvidence
+      parameters:
+        - name: namespace
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Gate evidence metadata and content digests
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvidenceResponse'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /v1/releases/{namespace}/{name}:pause:
+    post:
+      summary: Create a Pause action
+      operationId: pauseRelease
+      parameters:
+        - $ref: '#/components/parameters/NamespacePath'
+        - $ref: '#/components/parameters/NamePath'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - $ref: '#/components/parameters/ActorIdentityHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActionRequest'
+      responses:
+        '202':
+          description: Action accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /v1/releases/{namespace}/{name}:promote:
+    post:
+      summary: Create a Promote action
+      operationId: promoteRelease
+      parameters:
+        - $ref: '#/components/parameters/NamespacePath'
+        - $ref: '#/components/parameters/NamePath'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - $ref: '#/components/parameters/ActorIdentityHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActionRequest'
+      responses:
+        '202':
+          description: Action accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /v1/releases/{namespace}/{name}:abort:
+    post:
+      summary: Create an Abort action
+      operationId: abortRelease
+      parameters:
+        - $ref: '#/components/parameters/NamespacePath'
+        - $ref: '#/components/parameters/NamePath'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - $ref: '#/components/parameters/ActorIdentityHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActionRequest'
+      responses:
+        '202':
+          description: Action accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /v1/releases/{namespace}/{name}:retryAnalysis:
+    post:
+      summary: Create a RetryAnalysis action
+      operationId: retryAnalysisRelease
+      parameters:
+        - $ref: '#/components/parameters/NamespacePath'
+        - $ref: '#/components/parameters/NamePath'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - $ref: '#/components/parameters/ActorIdentityHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActionRequest'
+      responses:
+        '202':
+          description: Action accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  /livez:
+    get:
+      summary: Process liveness probe
+      operationId: livez
+      responses:
+        '200':
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: UP
+
+  /readyz:
+    get:
+      summary: Process readiness probe
+      operationId: readyz
+      responses:
+        '200':
+          description: Process is ready to serve traffic
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: UP
+                  database:
+                    type: string
+                    example: HEALTHY
+        '503':
+          description: Process is not ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: DOWN
+                  database:
+                    type: string
+                    example: UNHEALTHY
+
+components:
+  parameters:
+    NamespacePath:
+      name: namespace
+      in: path
+      required: true
+      schema:
+        type: string
+    NamePath:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+      description: Unique idempotency key identifying mutating operation
+    ActorIdentityHeader:
+      name: X-Actor-Identity
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Authenticated actor identity
+
+  schemas:
+    ApiError:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          example: ReleaseNotFound
+        message:
+          type: string
+          example: "Release not found: demo/checkout"
+        traceId:
+          type: string
+          nullable: true
+        fieldViolations:
+          type: array
+          items:
+            $ref: '#/components/schemas/FieldViolation'
+
+    FieldViolation:
+      type: object
+      required:
+        - field
+        - message
+      properties:
+        field:
+          type: string
+        message:
+          type: string
+
+    ReleaseResponse:
+      type: object
+      required:
+        - release
+        - freshness
+      properties:
+        release:
+          $ref: '#/components/schemas/ReleaseView'
+        freshness:
+          $ref: '#/components/schemas/FreshnessView'
+
+    ReleaseView:
+      type: object
+      required:
+        - releaseId
+        - releaseUid
+        - namespace
+        - name
+        - generation
+        - phase
+        - lastTransitionSequence
+        - lastEventId
+        - lastEventType
+        - lastEventAt
+        - updatedAt
+      properties:
+        releaseId:
+          type: string
+        releaseUid:
+          type: string
+        namespace:
+          type: string
+        name:
+          type: string
+        generation:
+          type: integer
+        phase:
+          type: string
+        currentStep:
+          type: integer
+          nullable: true
+        stableRevision:
+          type: string
+          nullable: true
+        canaryRevision:
+          type: string
+          nullable: true
+        lastTransitionSequence:
+          type: integer
+        lastEventId:
+          type: string
+        lastEventType:
+          type: string
+        lastEventAt:
+          type: string
+          format: date-time
+        gateDecision:
+          type: string
+          nullable: true
+        gateEvidenceRef:
+          type: string
+          nullable: true
+        gateEvidenceDigest:
+          type: string
+          nullable: true
+        updatedAt:
+          type: string
+          format: date-time
+
+    FreshnessView:
+      type: object
+      required:
+        - lastKafkaOffsets
+        - projectedThrough
+        - quarantinedEventsCount
+        - stale
+      properties:
+        lastKafkaOffsets:
+          type: object
+          additionalProperties:
+            type: integer
+        projectedThrough:
+          type: string
+          format: date-time
+        quarantinedEventsCount:
+          type: integer
+        stale:
+          type: boolean
+
+    EventListResponse:
+      type: object
+      required:
+        - items
+        - freshness
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventView'
+        nextCursor:
+          type: string
+          nullable: true
+        freshness:
+          $ref: '#/components/schemas/FreshnessView'
+
+    EventView:
+      type: object
+      required:
+        - eventId
+        - releaseId
+        - releaseUid
+        - generation
+        - sequence
+        - type
+        - occurredAt
+        - namespace
+        - releaseName
+        - payload
+      properties:
+        eventId:
+          type: string
+        releaseId:
+          type: string
+        releaseUid:
+          type: string
+        generation:
+          type: integer
+        sequence:
+          type: integer
+        type:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
+        namespace:
+          type: string
+        releaseName:
+          type: string
+        gitRevision:
+          type: string
+          nullable: true
+        imageDigest:
+          type: string
+          nullable: true
+        traceId:
+          type: string
+          nullable: true
+        payload:
+          type: object
+
+    EvidenceResponse:
+      type: object
+      required:
+        - namespace
+        - name
+        - items
+      properties:
+        namespace:
+          type: string
+        name:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/GateEvidenceItem'
+
+    GateEvidenceItem:
+      type: object
+      required:
+        - eventId
+        - sequence
+        - occurredAt
+      properties:
+        eventId:
+          type: string
+        sequence:
+          type: integer
+        occurredAt:
+          type: string
+          format: date-time
+        decision:
+          type: string
+          nullable: true
+        evidenceRef:
+          type: string
+          nullable: true
+        evidenceDigest:
+          type: string
+          nullable: true
+        details:
+          type: object
+
+    ActionRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+        uid:
+          type: string
+        generation:
+          type: integer
+
+    ActionResponse:
+      type: object
+      required:
+        - actionName
+        - namespace
+        - releaseName
+        - type
+        - phase
+        - idempotencyKey
+        - actor
+        - requestedAt
+      properties:
+        actionName:
+          type: string
+        namespace:
+          type: string
+        releaseName:
+          type: string
+        type:
+          type: string
+        phase:
+          type: string
+        idempotencyKey:
+          type: string
+        actor:
+          type: string
+        requestedAt:
+          type: string
+          format: date-time
+
+    PlanValidationRequest:
+      type: object
+      required:
+        - plan
+      properties:
+        plan:
+          type: object
+        policies:
+          type: array
+          items:
+            type: object
+
+    PlanValidationResponse:
+      type: object
+      required:
+        - valid
+        - acceptedPoliciesCount
+        - errors
+      properties:
+        valid:
+          type: boolean
+        acceptedPoliciesCount:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: object
+            required:
+              - requirement
+              - path
+              - message
+            properties:
+              requirement:
+                type: string
+              path:
+                type: string
+              message:
+                type: string
+
+    PlanRenderRequest:
+      type: object
+      required:
+        - plan
+      properties:
+        plan:
+          type: object
+        policies:
+          type: array
+          items:
+            type: object
+        uid:
+          type: string
+        generation:
+          type: integer
+
+    PlanRenderResponse:
+      type: object
+      required:
+        - targetName
+        - namespace
+        - uid
+        - generation
+        - generatedResources
+      properties:
+        targetName:
+          type: string
+        namespace:
+          type: string
+        uid:
+          type: string
+        generation:
+          type: integer
+        generatedResources:
+          type: array
+          items:
+            type: object
+
+  responses:
+    BadRequestError:
+      description: Bad request or validation failure
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+    UnauthorizedError:
+      description: Missing authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+    NotFoundError:
+      description: Release not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'

@@ -1,0 +1,33 @@
+spring:
+  application:
+    name: releaseguard-history-api-test
+  datasource:
+    url: jdbc:h2:mem:auditdb;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  flyway:
+    enabled: true
+  servlet:
+    multipart:
+      max-file-size: 1MB
+      max-request-size: 1MB
+
+server:
+  port: 0
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+releaseguard:
+  history:
+    kafka:
+      enabled: false
+    stale-threshold-seconds: 300
