@@ -20,6 +20,8 @@ public record EventEnvelope(
     Map<String, Object> payload) {
 
   public static final int CURRENT_SCHEMA_VERSION = 1;
+  public static final String RELEASE_NAME_LABEL = "delivery.weihantu.dev/release-name";
+  public static final String RELEASE_GENERATION_LABEL = "delivery.weihantu.dev/release-generation";
 
   public EventEnvelope {
     Objects.requireNonNull(eventId, "eventId");
@@ -51,12 +53,12 @@ public record EventEnvelope(
     String namespace = event.getMetadata().getNamespace();
     String releaseName = event.getMetadata().getName();
     if (event.getMetadata().getLabels() != null
-        && event.getMetadata().getLabels().containsKey("delivery.weihantu.dev/release-name")) {
-      releaseName = event.getMetadata().getLabels().get("delivery.weihantu.dev/release-name");
+        && event.getMetadata().getLabels().containsKey(RELEASE_NAME_LABEL)) {
+      releaseName = event.getMetadata().getLabels().get(RELEASE_NAME_LABEL);
     }
 
-    String gitRevision = null;
-    String imageDigest = null;
+    String gitRevision = payloadString(spec.payload(), "gitRevision");
+    String imageDigest = payloadString(spec.payload(), "imageDigest");
     if (plan != null) {
       if (plan.getMetadata() != null) {
         if (plan.getMetadata().getName() != null) {
@@ -90,6 +92,13 @@ public record EventEnvelope(
         spec.occurredAt(),
         null,
         spec.payload());
+  }
+
+  private static String payloadString(Map<String, Object> payload, String key) {
+    if (payload == null || payload.get(key) == null) {
+      return null;
+    }
+    return payload.get(key).toString();
   }
 
   private static String extractImageDigest(ReleasePlanSpec.Workload workload) {

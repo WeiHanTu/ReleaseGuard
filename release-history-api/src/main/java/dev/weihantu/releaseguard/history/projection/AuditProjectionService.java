@@ -7,6 +7,7 @@ import dev.weihantu.releaseguard.api.v1alpha1.EventEnvelope;
 import dev.weihantu.releaseguard.history.config.HistoryProperties;
 import dev.weihantu.releaseguard.history.repository.AuditRepository;
 import dev.weihantu.releaseguard.history.repository.EventRecord;
+import dev.weihantu.releaseguard.history.repository.KafkaPoisonRecord;
 import dev.weihantu.releaseguard.history.repository.QuarantinedEventRecord;
 import dev.weihantu.releaseguard.history.repository.ReleaseProjectionRecord;
 import io.micrometer.core.instrument.Counter;
@@ -17,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -31,6 +33,16 @@ public class AuditProjectionService {
 
   private static final Logger log = LoggerFactory.getLogger(AuditProjectionService.class);
   private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
+  private static final Set<String> VALID_PHASES =
+      Set.of(
+          "Validating",
+          "Bootstrapping",
+          "Progressing",
+          "Paused",
+          "RollingBack",
+          "RolledBack",
+          "Succeeded",
+          "Failed");
 
   private final AuditRepository auditRepository;
   private final HistoryProperties properties;
@@ -132,6 +144,34 @@ public class AuditProjectionService {
   }
 
   /**
+   * Durably records an invalid Kafka envelope and advances the database checkpoint atomically. The
+   * Kafka position is the idempotency key, so a crash between this commit and Kafka offset commit
+   * does not duplicate the quarantine row.
+   */
+  @Transactional
+  public boolean quarantineMalformedKafkaRecord(
+      String topic,
+      int partition,
+      long offset,
+      String recordKey,
+      String rawValue,
+      Exception failure) {
+    Objects.requireNonNull(topic, "topic");
+    Objects.requireNonNull(failure, "failure");
+
+    boolean inserted = false;
+    if (!auditRepository.kafkaPoisonRecordExists(topic, partition, offset)) {
+      String reason = boundedReason(failure);
+      auditRepository.insertKafkaPoisonRecord(
+          new KafkaPoisonRecord(
+              topic, partition, offset, recordKey, rawValue, reason, Instant.now()));
+      inserted = true;
+    }
+    auditRepository.upsertCheckpoint(topic, partition, offset, Instant.now());
+    return inserted;
+  }
+
+  /**
    * Rebuilds the projection from all stored events (RG-AUD-005). Deleting and rebuilding the
    * projection yields equivalent release views.
    */
@@ -170,6 +210,14 @@ public class AuditProjectionService {
     return lag.getSeconds() > properties.getStaleThresholdSeconds();
   }
 
+  private static String boundedReason(Exception failure) {
+    String detail = failure.getMessage();
+    String reason =
+        failure.getClass().getSimpleName()
+            + (detail == null || detail.isBlank() ? "" : ": " + detail.replace('\n', ' '));
+    return reason.length() <= 512 ? reason : reason.substring(0, 512);
+  }
+
   private void quarantineEvent(EventEnvelope envelope, String reason, long expectedSequence) {
     String rawEnvelope;
     try {
@@ -196,7 +244,11 @@ public class AuditProjectionService {
 
   private ReleaseProjectionRecord computeUpdatedProjection(
       EventRecord event, Map<String, Object> payload, ReleaseProjectionRecord existing) {
-    String phase = determinePhase(event.type(), existing != null ? existing.phase() : null);
+    String phase =
+        determinePhase(
+            event.type(),
+            extractString(payload, "phase", null),
+            existing != null ? existing.phase() : null);
     Integer step = extractStep(payload, existing != null ? existing.currentStep() : null);
     String stableRevision =
         extractString(
@@ -208,10 +260,18 @@ public class AuditProjectionService {
             payload,
             "canaryRevision",
             existing != null ? existing.canaryRevision() : event.gitRevision());
+    Map<String, Object> nestedGate = extractMap(payload, "lastGateDecision");
     String gateDecision =
-        extractString(payload, "decision", existing != null ? existing.gateDecision() : null);
+        extractString(
+            nestedGate,
+            "decision",
+            extractString(payload, "decision", existing != null ? existing.gateDecision() : null));
     String evidenceRef =
-        extractString(payload, "evidenceRef", existing != null ? existing.gateEvidenceRef() : null);
+        extractString(
+            nestedGate,
+            "evidenceRef",
+            extractString(
+                payload, "evidenceRef", existing != null ? existing.gateEvidenceRef() : null));
     String evidenceDigest =
         extractString(
             payload, "evidenceDigest", existing != null ? existing.gateEvidenceDigest() : null);
@@ -236,17 +296,31 @@ public class AuditProjectionService {
         Instant.now());
   }
 
-  private static String determinePhase(String eventType, String existingPhase) {
+  private static String determinePhase(
+      String eventType, String payloadPhase, String existingPhase) {
     return switch (eventType) {
-      case "release.bootstrapped" -> "Bootstrapping";
+      case "release.bootstrapped" -> "Succeeded";
       case "release.progressing" -> "Progressing";
       case "rollout.promoted" -> "Progressing";
       case "rollback.started" -> "RollingBack";
       case "rollback.completed" -> "RolledBack";
+      case "rollback.failed" -> "Failed";
       case "release.succeeded" -> "Succeeded";
       case "release.failed" -> "Failed";
-      default -> existingPhase != null ? existingPhase : "Progressing";
+      default ->
+          payloadPhase != null && VALID_PHASES.contains(payloadPhase)
+              ? payloadPhase
+              : existingPhase != null ? existingPhase : "Progressing";
     };
+  }
+
+  private static Map<String, Object> extractMap(Map<String, Object> payload, String key) {
+    if (payload == null || !(payload.get(key) instanceof Map<?, ?> raw)) {
+      return Map.of();
+    }
+    Map<String, Object> result = new java.util.LinkedHashMap<>();
+    raw.forEach((nestedKey, value) -> result.put(String.valueOf(nestedKey), value));
+    return Map.copyOf(result);
   }
 
   private static Integer extractStep(Map<String, Object> payload, Integer defaultStep) {

@@ -2,6 +2,7 @@ package dev.weihantu.releaseguard.operator;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.weihantu.releaseguard.api.v1alpha1.ReleaseEvent;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleaseEventStatus;
@@ -22,6 +23,7 @@ class ReleaseEventRendererTest {
             .withUid("uid-4f8f")
             .withGeneration(4L)
             .build());
+    plan.setSpec(OperatorTestFixtures.spec());
 
     ReleasePlanStatus.Transition transition =
         new ReleasePlanStatus.Transition(
@@ -49,10 +51,12 @@ class ReleaseEventRendererTest {
 
     assertEquals("checkout-4-000012", event.getMetadata().getName());
     assertEquals("demo", event.getMetadata().getNamespace());
-    assertEquals(1, event.getMetadata().getOwnerReferences().size());
-    assertEquals("ReleasePlan", event.getMetadata().getOwnerReferences().getFirst().getKind());
-    assertEquals("checkout", event.getMetadata().getOwnerReferences().getFirst().getName());
-    assertEquals("uid-4f8f", event.getMetadata().getOwnerReferences().getFirst().getUid());
+    assertTrue(
+        event.getMetadata().getOwnerReferences() == null
+            || event.getMetadata().getOwnerReferences().isEmpty(),
+        "pending outbox records must survive ReleasePlan garbage collection (RG-OUT-006)");
+    assertEquals(
+        "checkout", event.getMetadata().getLabels().get(ReleaseResourceRenderer.PLAN_NAME_LABEL));
 
     assertEquals(transition.eventId(), event.getSpec().eventId());
     assertEquals("uid-4f8f:4", event.getSpec().releaseId());
@@ -64,6 +68,8 @@ class ReleaseEventRendererTest {
     assertEquals("RollingBack", event.getSpec().payload().get("phase"));
     assertEquals("checkout-stable-hash", event.getSpec().payload().get("stableRevision"));
     assertEquals("checkout-canary-hash", event.getSpec().payload().get("canaryRevision"));
+    assertEquals(2, event.getSpec().payload().get("currentStep"));
+    assertEquals(OperatorTestFixtures.IMAGE, event.getSpec().payload().get("imageDigest"));
 
     assertNotNull(event.getStatus());
     assertEquals(ReleaseEventStatus.Phase.Pending, event.getStatus().phase());

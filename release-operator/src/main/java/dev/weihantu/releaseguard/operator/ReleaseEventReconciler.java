@@ -121,8 +121,8 @@ public final class ReleaseEventReconciler implements Reconciler<ReleaseEvent>, A
       return null;
     }
     if (event.getMetadata().getLabels() != null
-        && event.getMetadata().getLabels().containsKey("delivery.weihantu.dev/release-name")) {
-      return event.getMetadata().getLabels().get("delivery.weihantu.dev/release-name");
+        && event.getMetadata().getLabels().containsKey(EventEnvelope.RELEASE_NAME_LABEL)) {
+      return event.getMetadata().getLabels().get(EventEnvelope.RELEASE_NAME_LABEL);
     }
     if (event.getMetadata().getOwnerReferences() != null) {
       for (OwnerReference ref : event.getMetadata().getOwnerReferences()) {

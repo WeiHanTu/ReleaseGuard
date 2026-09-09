@@ -4,15 +4,36 @@ import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.crypto.RSASSASigner;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
 import dev.weihantu.releaseguard.api.v1alpha1.EventEnvelope;
+import dev.weihantu.releaseguard.api.v1alpha1.ReleaseAction;
 import dev.weihantu.releaseguard.history.projection.AuditProjectionService;
+import dev.weihantu.releaseguard.history.service.ReleaseActionService;
+import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.NoSuchAlgorithmException;
+import java.security.interfaces.RSAPublicKey;
 import java.time.Instant;
+import java.util.Date;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -20,22 +41,35 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.jwt.JwtValidators;
+import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
+@Import(ReleaseHistoryControllerTest.JwtTestConfiguration.class)
 class ReleaseHistoryControllerTest {
+
+  private static final KeyPair JWT_SIGNING_KEY = signingKey();
 
   @Autowired private MockMvc mockMvc;
   @Autowired private AuditProjectionService projectionService;
   @Autowired private JdbcTemplate jdbcTemplate;
+  @MockitoBean private ReleaseActionService actionService;
 
   @BeforeEach
   void cleanDatabase() {
+    jdbcTemplate.update("DELETE FROM kafka_poison_records");
     jdbcTemplate.update("DELETE FROM quarantined_events");
     jdbcTemplate.update("DELETE FROM events");
     jdbcTemplate.update("DELETE FROM releases");
@@ -175,7 +209,7 @@ class ReleaseHistoryControllerTest {
     mockMvc
         .perform(
             post("/v1/releases/demo/payments:pause")
-                .header("X-Actor-Identity", "engineer@example.com")
+                .header("Authorization", "Bearer " + signedToken("operator@example.com"))
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"reason\": \"Urgent pause\"}"))
         .andExpect(status().isBadRequest())
@@ -193,7 +227,83 @@ class ReleaseHistoryControllerTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"reason\": \"Urgent pause\"}"))
         .andExpect(status().isUnauthorized())
-        .andExpect(jsonPath("$.code", is("MissingAuthentication")));
+        .andExpect(jsonPath("$.code", is("AuthenticationRequired")));
+  }
+
+  @Test
+  @DisplayName("Caller-controlled identity headers cannot authenticate a mutation")
+  void testSpoofedIdentityHeaderIsRejected() throws Exception {
+    mockMvc
+        .perform(
+            post("/v1/releases/demo/payments:pause")
+                .header("Idempotency-Key", "uuid-pause-spoof")
+                .header("X-Actor-Identity", "admin@example.com")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"reason\": \"Urgent pause\"}"))
+        .andExpect(status().isUnauthorized())
+        .andExpect(jsonPath("$.code", is("AuthenticationRequired")));
+  }
+
+  @Test
+  @DisplayName("A bearer token with an invalid RSA signature cannot authenticate a mutation")
+  void testInvalidJwtSignatureIsRejected() throws Exception {
+    String token = signedToken("operator@example.com");
+    String[] segments = token.split("\\.");
+    segments[2] = (segments[2].startsWith("a") ? "b" : "a") + segments[2].substring(1);
+    String tampered = String.join(".", segments);
+
+    mockMvc
+        .perform(
+            post("/v1/releases/demo/payments:pause")
+                .header("Idempotency-Key", "uuid-pause-invalid-signature")
+                .header("Authorization", "Bearer " + tampered)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"reason\": \"Urgent pause\"}"))
+        .andExpect(status().isUnauthorized())
+        .andExpect(jsonPath("$.code", is("AuthenticationRequired")));
+  }
+
+  @Test
+  @DisplayName("Viewer JWT cannot create a release action (RG-SEC-002)")
+  void testViewerCannotMutateRelease() throws Exception {
+    mockMvc
+        .perform(
+            post("/v1/releases/demo/payments:pause")
+                .header("Idempotency-Key", "uuid-viewer-forbidden")
+                .header(
+                    "Authorization",
+                    "Bearer "
+                        + signedToken(
+                            "viewer@example.com", List.of("viewer"), List.of("demo/payments")))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"reason\": \"Unauthorized pause\"}"))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code", is("MutationForbidden")));
+
+    verifyNoInteractions(actionService);
+  }
+
+  @Test
+  @DisplayName("Operator JWT cannot mutate an application outside its claim scope (RG-SEC-004)")
+  void testOperatorCannotMutateReleaseOutsideScope() throws Exception {
+    mockMvc
+        .perform(
+            post("/v1/releases/demo/payments:pause")
+                .header("Idempotency-Key", "uuid-scope-forbidden")
+                .header(
+                    "Authorization",
+                    "Bearer "
+                        + signedToken(
+                            "operator@example.com",
+                            List.of("developer-operator"),
+                            List.of("demo/checkout")))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"reason\": \"Out-of-scope pause\"}"))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.code", is("MutationForbidden")))
+        .andExpect(jsonPath("$.message", containsString("demo/payments")));
+
+    verifyNoInteractions(actionService);
   }
 
   @Test
@@ -216,12 +326,32 @@ class ReleaseHistoryControllerTest {
             null,
             Map.of("step", 0));
     projectionService.project(event, "deployment-events.v1", 0, 1L);
+    when(actionService.submitAction(
+            anyString(),
+            anyString(),
+            anyString(),
+            anyLong(),
+            any(),
+            anyString(),
+            anyString(),
+            anyString()))
+        .thenAnswer(
+            invocation -> {
+              ReleaseAction created = new ReleaseAction();
+              created.setMetadata(
+                  new ObjectMetaBuilder()
+                      .withName("payments-pause-verified")
+                      .withNamespace("demo")
+                      .build());
+              return created;
+            });
 
     mockMvc
         .perform(
             post("/v1/releases/demo/payments:pause")
                 .header("Idempotency-Key", "uuid-pause-12345")
-                .header("X-Actor-Identity", "operator@example.com")
+                .header("Authorization", "Bearer " + signedToken("operator@example.com"))
+                .header("X-Actor-Identity", "spoofed-admin@example.com")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"reason\": \"Hold for manual review\"}"))
         .andExpect(status().isAccepted())
@@ -229,6 +359,17 @@ class ReleaseHistoryControllerTest {
         .andExpect(jsonPath("$.actor", is("operator@example.com")))
         .andExpect(jsonPath("$.idempotencyKey", is("uuid-pause-12345")))
         .andExpect(jsonPath("$.actionName", notNullValue()));
+
+    verify(actionService)
+        .submitAction(
+            eq("demo"),
+            eq("payments"),
+            eq("uid-act"),
+            eq(1L),
+            any(),
+            eq("Hold for manual review"),
+            eq("uuid-pause-12345"),
+            eq("operator@example.com"));
   }
 
   @Test
@@ -244,5 +385,51 @@ class ReleaseHistoryControllerTest {
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.status", is("UP")))
         .andExpect(jsonPath("$.database", is("HEALTHY")));
+  }
+
+  private static KeyPair signingKey() {
+    try {
+      KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+      generator.initialize(2048);
+      return generator.generateKeyPair();
+    } catch (NoSuchAlgorithmException exception) {
+      throw new IllegalStateException("RSA unavailable", exception);
+    }
+  }
+
+  private static String signedToken(String subject) {
+    return signedToken(subject, List.of("developer-operator"), List.of("demo/payments"));
+  }
+
+  private static String signedToken(String subject, List<String> roles, List<String> actionScopes) {
+    try {
+      Instant now = Instant.now();
+      SignedJWT token =
+          new SignedJWT(
+              new JWSHeader.Builder(JWSAlgorithm.RS256).build(),
+              new JWTClaimsSet.Builder()
+                  .subject(subject)
+                  .issueTime(Date.from(now.minusSeconds(30)))
+                  .expirationTime(Date.from(now.plusSeconds(300)))
+                  .claim("roles", roles)
+                  .claim("releaseguard_actions", actionScopes)
+                  .build());
+      token.sign(new RSASSASigner(JWT_SIGNING_KEY.getPrivate()));
+      return token.serialize();
+    } catch (Exception exception) {
+      throw new IllegalStateException("Could not sign test JWT", exception);
+    }
+  }
+
+  @TestConfiguration(proxyBeanMethods = false)
+  static class JwtTestConfiguration {
+    @Bean
+    @Primary
+    JwtDecoder testJwtDecoder() {
+      NimbusJwtDecoder decoder =
+          NimbusJwtDecoder.withPublicKey((RSAPublicKey) JWT_SIGNING_KEY.getPublic()).build();
+      decoder.setJwtValidator(JwtValidators.createDefault());
+      return decoder;
+    }
   }
 }

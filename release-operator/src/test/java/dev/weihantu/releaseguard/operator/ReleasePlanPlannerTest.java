@@ -341,7 +341,7 @@ class ReleasePlanPlannerTest {
   }
 
   @Test
-  void fullTrafficWithoutObservedGateEvidenceDoesNotClaimApproval() {
+  void fullTrafficWithoutObservedGateEvidenceIsRejected() {
     var plan = OperatorTestFixtures.plan(18);
     plan.setStatus(activeStatus(18, Phase.Progressing, "checkout-old"));
 
@@ -358,10 +358,15 @@ class ReleasePlanPlannerTest {
                 List.of(),
                 RolloutObservation.StepAnalysis.NONE));
 
-    assertEquals(Phase.Succeeded, result.status().phase());
-    assertEquals("PromotionObservedWithoutGateEvidence", conditionReason(result.status(), "Ready"));
+    assertEquals(Phase.RollingBack, result.status().phase());
+    assertEquals("PromotionRejectedWithoutGateEvidence", conditionReason(result.status(), "Ready"));
     assertNull(result.status().lastGateDecision());
     assertEquals("Unknown", conditionStatus(result.status(), "GateHealthy"));
+    assertEquals("True", conditionStatus(result.status(), "Degraded"));
+    assertEquals("checkout-old", result.status().stableRevision());
+    assertEquals("checkout-candidate", result.status().canaryRevision());
+    assertEquals("rollback.started", result.status().lastTransition().type());
+    assertTrue(result.requestAbort());
   }
 
   @Test

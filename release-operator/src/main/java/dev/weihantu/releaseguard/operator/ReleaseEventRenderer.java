@@ -1,5 +1,6 @@
 package dev.weihantu.releaseguard.operator;
 
+import dev.weihantu.releaseguard.api.v1alpha1.EventEnvelope;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleaseEvent;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleaseEventSpec;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleaseEventStatus;
@@ -7,20 +8,19 @@ import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlan;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanStatus;
 import io.fabric8.kubernetes.api.model.ObjectMeta;
 import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
-import io.fabric8.kubernetes.api.model.OwnerReferenceBuilder;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-final class ReleaseEventRenderer {
+public final class ReleaseEventRenderer {
   private ReleaseEventRenderer() {}
 
-  static String eventName(String planName, long generation, long sequence) {
+  public static String eventName(String planName, long generation, long sequence) {
     return String.format("%s-%d-%06d", planName, generation, sequence);
   }
 
-  static ReleaseEvent render(
+  public static ReleaseEvent render(
       ReleasePlan plan, ReleasePlanStatus.Transition transition, ReleasePlanStatus status) {
     Objects.requireNonNull(plan, "plan");
     Objects.requireNonNull(transition, "transition");
@@ -46,6 +46,17 @@ final class ReleaseEventRenderer {
     if (status.canaryRevision() != null) {
       payload.put("canaryRevision", status.canaryRevision());
     }
+    if (status.currentStep() != null) {
+      payload.put("currentStep", status.currentStep());
+    }
+    String gitRevision = gitRevision(plan);
+    if (gitRevision != null) {
+      payload.put("gitRevision", gitRevision);
+    }
+    String imageDigest = imageDigest(plan);
+    if (imageDigest != null) {
+      payload.put("imageDigest", imageDigest);
+    }
     if (status.lastGateDecision() != null) {
       Map<String, Object> gate = new LinkedHashMap<>();
       gate.put("decision", status.lastGateDecision().decision());
@@ -62,21 +73,14 @@ final class ReleaseEventRenderer {
                 Map.of(
                     ReleaseResourceRenderer.PLAN_UID_LABEL,
                     uid,
-                    "delivery.weihantu.dev/release-name",
+                    ReleaseResourceRenderer.PLAN_NAME_LABEL,
                     planName,
-                    "delivery.weihantu.dev/release-generation",
+                    EventEnvelope.RELEASE_NAME_LABEL,
+                    planName,
+                    EventEnvelope.RELEASE_GENERATION_LABEL,
                     String.valueOf(generation),
                     ReleaseResourceRenderer.MANAGED_BY_LABEL,
                     "releaseguard"))
-            .withOwnerReferences(
-                new OwnerReferenceBuilder()
-                    .withApiVersion("delivery.weihantu.dev/v1alpha1")
-                    .withKind("ReleasePlan")
-                    .withName(planName)
-                    .withUid(uid)
-                    .withController(true)
-                    .withBlockOwnerDeletion(true)
-                    .build())
             .build();
 
     ReleaseEventSpec spec =
@@ -94,5 +98,32 @@ final class ReleaseEventRenderer {
     event.setStatus(
         new ReleaseEventStatus(ReleaseEventStatus.Phase.Pending, 0, null, null, null, List.of()));
     return event;
+  }
+
+  private static String gitRevision(ReleasePlan plan) {
+    if (plan.getMetadata().getAnnotations() == null) {
+      return null;
+    }
+    String gitRevision =
+        plan.getMetadata().getAnnotations().get("delivery.weihantu.dev/git-revision");
+    return gitRevision != null
+        ? gitRevision
+        : plan.getMetadata().getAnnotations().get("app.kubernetes.io/version");
+  }
+
+  private static String imageDigest(ReleasePlan plan) {
+    if (plan.getSpec() == null
+        || plan.getSpec().workload() == null
+        || plan.getSpec().workload().podTemplate() == null
+        || plan.getSpec().workload().podTemplate().getSpec() == null
+        || plan.getSpec().workload().podTemplate().getSpec().getContainers() == null) {
+      return null;
+    }
+    String managed = plan.getSpec().workload().managedContainer();
+    return plan.getSpec().workload().podTemplate().getSpec().getContainers().stream()
+        .filter(container -> managed == null || managed.equals(container.getName()))
+        .findFirst()
+        .map(io.fabric8.kubernetes.api.model.Container::getImage)
+        .orElse(null);
   }
 }

@@ -10,7 +10,8 @@ public record ReconciliationPlan(
     ReleasePlanStatus status,
     List<HasMetadata> desiredResources,
     Duration requeueAfter,
-    boolean stopCandidateTraffic) {
+    boolean stopCandidateTraffic,
+    boolean requestAbort) {
 
   public ReconciliationPlan {
     Objects.requireNonNull(status, "status");
@@ -19,7 +20,15 @@ public record ReconciliationPlan(
 
   public ReconciliationPlan(
       ReleasePlanStatus status, List<HasMetadata> desiredResources, Duration requeueAfter) {
-    this(status, desiredResources, requeueAfter, false);
+    this(status, desiredResources, requeueAfter, false, false);
+  }
+
+  public ReconciliationPlan(
+      ReleasePlanStatus status,
+      List<HasMetadata> desiredResources,
+      Duration requeueAfter,
+      boolean stopCandidateTraffic) {
+    this(status, desiredResources, requeueAfter, stopCandidateTraffic, false);
   }
 
   public boolean hasDesiredResources() {

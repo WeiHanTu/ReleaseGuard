@@ -1,5 +1,6 @@
 package dev.weihantu.releaseguard.history.api;
 
+import dev.weihantu.releaseguard.history.service.ActionSubmissionException;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,22 +28,22 @@ public class ApiExceptionHandler {
         .body(new ApiError("ProjectionUnavailable", ex.getMessage()));
   }
 
+  @ExceptionHandler(ActionSubmissionException.class)
+  public ResponseEntity<ApiError> handleActionSubmission(ActionSubmissionException ex) {
+    return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+        .body(new ApiError("ActionSubmissionUnavailable", ex.getMessage()));
+  }
+
+  @ExceptionHandler(MutationForbiddenException.class)
+  public ResponseEntity<ApiError> handleMutationForbidden(MutationForbiddenException ex) {
+    return ResponseEntity.status(HttpStatus.FORBIDDEN)
+        .body(new ApiError("MutationForbidden", ex.getMessage()));
+  }
+
   @ExceptionHandler(InvalidActionException.class)
   public ResponseEntity<ApiError> handleInvalidAction(InvalidActionException ex) {
     return ResponseEntity.status(HttpStatus.BAD_REQUEST)
         .body(new ApiError("InvalidAction", ex.getMessage()));
-  }
-
-  @ExceptionHandler(ReleaseHistoryController.MissingAuthenticationException.class)
-  public ResponseEntity<ApiError> handleMissingAuthentication(
-      ReleaseHistoryController.MissingAuthenticationException ex) {
-    return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-        .body(
-            new ApiError(
-                "MissingAuthentication",
-                ex.getMessage(),
-                List.of(
-                    new ApiError.FieldViolation("header.X-Actor-Identity", "Header is missing"))));
   }
 
   @ExceptionHandler(MissingRequestHeaderException.class)
@@ -56,17 +57,6 @@ public class ApiExceptionHandler {
                   "Idempotency-Key header is required for mutating requests",
                   List.of(
                       new ApiError.FieldViolation("header.Idempotency-Key", "Header is missing"))));
-    }
-    if ("X-Actor-Identity".equalsIgnoreCase(headerName)
-        || "Authorization".equalsIgnoreCase(headerName)) {
-      return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
-          .body(
-              new ApiError(
-                  "MissingAuthentication",
-                  "Authenticated identity header is required for mutating requests",
-                  List.of(
-                      new ApiError.FieldViolation(
-                          "header.X-Actor-Identity", "Header is missing"))));
     }
     return ResponseEntity.status(HttpStatus.BAD_REQUEST)
         .body(

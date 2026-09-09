@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlan;
+import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanStatus;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanStatus.Phase;
 import io.fabric8.kubernetes.api.model.HasMetadata;
 import io.javaoperatorsdk.operator.api.reconciler.Context;
@@ -87,6 +88,48 @@ class ReleasePlanReconcilerTest {
 
     assertThrows(IllegalStateException.class, () -> reconciler.reconcile(plan, null));
     assertEquals(Phase.Validating, plan.getStatus().phase());
+  }
+
+  @Test
+  void unapprovedFullTrafficRequestsAbortBeforePublishingRollbackStatus() {
+    RecordingRuntime runtime = new RecordingRuntime();
+    ReleasePlanReconciler reconciler = reconciler(runtime);
+    ReleasePlan plan = OperatorTestFixtures.plan(8);
+    plan.setStatus(
+        new ReleasePlanStatus(
+            8L,
+            OperatorTestFixtures.UID + ":8",
+            Phase.Progressing,
+            1,
+            "checkout-old",
+            "checkout-candidate",
+            new ReleasePlanStatus.ResourceReference("checkout"),
+            null,
+            null,
+            0,
+            List.of()));
+    runtime.rolloutObservation =
+        new RolloutObservation(
+            true,
+            true,
+            "Healthy",
+            5,
+            "candidate",
+            "candidate",
+            2,
+            2,
+            true,
+            RolloutObservation.Abort.NONE,
+            List.of(),
+            RolloutObservation.StepAnalysis.NONE,
+            RolloutObservation.StepAnalysis.NONE,
+            0);
+
+    reconciler.reconcile(plan, null);
+
+    assertEquals(1, runtime.abortRequests);
+    assertEquals(Phase.RollingBack, plan.getStatus().phase());
+    assertEquals("PromotionRejectedWithoutGateEvidence", conditionReason(plan, "Ready"));
   }
 
   @Test

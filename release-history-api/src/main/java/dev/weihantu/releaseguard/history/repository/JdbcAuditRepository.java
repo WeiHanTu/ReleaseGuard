@@ -264,6 +264,38 @@ public class JdbcAuditRepository implements AuditRepository {
   }
 
   @Override
+  public boolean kafkaPoisonRecordExists(String topic, int partition, long offset) {
+    Integer count =
+        jdbcTemplate.queryForObject(
+            """
+            SELECT COUNT(*) FROM kafka_poison_records
+            WHERE topic = ? AND partition_id = ? AND record_offset = ?
+            """,
+            Integer.class,
+            topic,
+            partition,
+            offset);
+    return count != null && count > 0;
+  }
+
+  @Override
+  public void insertKafkaPoisonRecord(KafkaPoisonRecord record) {
+    jdbcTemplate.update(
+        """
+        INSERT INTO kafka_poison_records (
+            topic, partition_id, record_offset, record_key, raw_value, reason, quarantined_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        record.topic(),
+        record.partition(),
+        record.offset(),
+        record.recordKey(),
+        record.rawValue(),
+        record.reason(),
+        Timestamp.from(record.quarantinedAt()));
+  }
+
+  @Override
   public long countQuarantinedEvents(String releaseId) {
     Long count =
         jdbcTemplate.queryForObject(
@@ -273,7 +305,14 @@ public class JdbcAuditRepository implements AuditRepository {
 
   @Override
   public long countAllQuarantinedEvents() {
-    Long count = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM quarantined_events", Long.class);
+    Long count =
+        jdbcTemplate.queryForObject(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM quarantined_events)
+              + (SELECT COUNT(*) FROM kafka_poison_records)
+            """,
+            Long.class);
     return count == null ? 0L : count;
   }
 

@@ -4,6 +4,7 @@ import dev.weihantu.releaseguard.api.v1alpha1.ReleaseAction;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleaseActionSpec;
 import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
 import io.fabric8.kubernetes.client.KubernetesClient;
+import io.fabric8.kubernetes.client.KubernetesClientException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -70,26 +71,48 @@ public class Fabric8ReleaseActionService implements ReleaseActionService {
             target, type, reason, idempotencyKey, actor, Instant.now().toString());
     action.setSpec(spec);
 
-    if (kubernetesClient != null) {
-      try {
-        log.info(
-            "Creating ReleaseAction {} for release {}/{} (type={})",
-            actionName,
-            namespace,
-            releaseName,
-            type);
-        return kubernetesClient
-            .resources(ReleaseAction.class)
-            .inNamespace(namespace)
-            .resource(action)
-            .create();
-      } catch (Exception e) {
-        log.warn(
-            "Failed to submit ReleaseAction to Kubernetes API (falling back to generated resource): {}",
-            e.getMessage());
-      }
+    if (kubernetesClient == null) {
+      throw new ActionSubmissionException("Kubernetes API client is unavailable");
     }
-    return action;
+    try {
+      log.info(
+          "Creating ReleaseAction {} for release {}/{} (type={})",
+          actionName,
+          namespace,
+          releaseName,
+          type);
+      return kubernetesClient
+          .resources(ReleaseAction.class)
+          .inNamespace(namespace)
+          .resource(action)
+          .create();
+    } catch (KubernetesClientException exception) {
+      if (exception.getCode() == 409) {
+        ReleaseAction existing =
+            kubernetesClient
+                .resources(ReleaseAction.class)
+                .inNamespace(namespace)
+                .withName(actionName)
+                .get();
+        if (existing != null && equivalentRequest(action.getSpec(), existing.getSpec())) {
+          return existing;
+        }
+      }
+      throw new ActionSubmissionException(
+          "Kubernetes API rejected ReleaseAction " + namespace + "/" + actionName, exception);
+    } catch (RuntimeException exception) {
+      throw new ActionSubmissionException(
+          "Could not create ReleaseAction " + namespace + "/" + actionName, exception);
+    }
+  }
+
+  private static boolean equivalentRequest(ReleaseActionSpec expected, ReleaseActionSpec actual) {
+    return actual != null
+        && Objects.equals(expected.target(), actual.target())
+        && expected.type() == actual.type()
+        && Objects.equals(expected.reason(), actual.reason())
+        && Objects.equals(expected.idempotencyKey(), actual.idempotencyKey())
+        && Objects.equals(expected.actor(), actual.actor());
   }
 
   private static String hashKey(String key) {

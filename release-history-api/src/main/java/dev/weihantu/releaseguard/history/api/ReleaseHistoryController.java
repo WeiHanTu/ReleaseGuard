@@ -8,6 +8,7 @@ import dev.weihantu.releaseguard.history.projection.ProjectionFreshness;
 import dev.weihantu.releaseguard.history.repository.AuditRepository;
 import dev.weihantu.releaseguard.history.repository.EventRecord;
 import dev.weihantu.releaseguard.history.repository.ReleaseProjectionRecord;
+import dev.weihantu.releaseguard.history.security.MutationAuthorizationService;
 import dev.weihantu.releaseguard.history.service.ReleaseActionService;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -17,6 +18,7 @@ import java.util.Objects;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -33,16 +35,20 @@ public class ReleaseHistoryController {
   private final AuditRepository auditRepository;
   private final AuditProjectionService projectionService;
   private final ReleaseActionService actionService;
+  private final MutationAuthorizationService authorizationService;
   private final HistoryProperties properties;
 
   public ReleaseHistoryController(
       AuditRepository auditRepository,
       AuditProjectionService projectionService,
       ReleaseActionService actionService,
+      MutationAuthorizationService authorizationService,
       HistoryProperties properties) {
     this.auditRepository = Objects.requireNonNull(auditRepository, "auditRepository");
     this.projectionService = Objects.requireNonNull(projectionService, "projectionService");
     this.actionService = Objects.requireNonNull(actionService, "actionService");
+    this.authorizationService =
+        Objects.requireNonNull(authorizationService, "authorizationService");
     this.properties = Objects.requireNonNull(properties, "properties");
   }
 
@@ -185,19 +191,11 @@ public class ReleaseHistoryController {
       @PathVariable("name") String name,
       @PathVariable("action") String action,
       @RequestHeader("Idempotency-Key") String idempotencyKey,
-      @RequestHeader(value = "X-Actor-Identity", required = false) String actorHeader,
-      @RequestHeader(value = "Authorization", required = false) String authHeader,
+      JwtAuthenticationToken authentication,
       @RequestBody(required = false) ActionRequest request) {
-
-    String actor = actorHeader;
-    if (actor == null || actor.isBlank()) {
-      actor = authHeader;
-    }
-    if (actor == null || actor.isBlank()) {
-      throw new MissingAuthenticationException();
-    }
-
     ReleaseActionSpec.Type type = parseActionType(action);
+    authorizationService.requireActionAccess(authentication.getToken(), namespace, name);
+    String actor = authentication.getToken().getSubject();
 
     ReleaseProjectionRecord release =
         auditRepository
@@ -261,12 +259,6 @@ public class ReleaseHistoryController {
       return Long.parseLong(cursor);
     } catch (NumberFormatException e) {
       return null;
-    }
-  }
-
-  public static class MissingAuthenticationException extends RuntimeException {
-    public MissingAuthenticationException() {
-      super("Authenticated identity is required for mutating requests");
     }
   }
 }

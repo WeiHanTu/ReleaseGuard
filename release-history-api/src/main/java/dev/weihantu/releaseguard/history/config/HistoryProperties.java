@@ -6,6 +6,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class HistoryProperties {
 
   private Kafka kafka = new Kafka();
+  private Auth auth = new Auth();
   private long staleThresholdSeconds = 300;
 
   public Kafka getKafka() {
@@ -14,6 +15,14 @@ public class HistoryProperties {
 
   public void setKafka(Kafka kafka) {
     this.kafka = kafka;
+  }
+
+  public Auth getAuth() {
+    return auth;
+  }
+
+  public void setAuth(Auth auth) {
+    this.auth = auth;
   }
 
   public long getStaleThresholdSeconds() {
@@ -60,6 +69,63 @@ public class HistoryProperties {
 
     public void setGroupId(String groupId) {
       this.groupId = groupId;
+    }
+  }
+
+  public static class Auth {
+    private String issuerUri;
+    private String jwkSetUri;
+    private String rolesClaim = "roles";
+    private String actionScopesClaim = "releaseguard_actions";
+    private String operatorRole = "developer-operator";
+    private String administratorRole = "platform-administrator";
+
+    public String getIssuerUri() {
+      return issuerUri;
+    }
+
+    public void setIssuerUri(String issuerUri) {
+      this.issuerUri = issuerUri;
+    }
+
+    public String getJwkSetUri() {
+      return jwkSetUri;
+    }
+
+    public void setJwkSetUri(String jwkSetUri) {
+      this.jwkSetUri = jwkSetUri;
+    }
+
+    public String getRolesClaim() {
+      return rolesClaim;
+    }
+
+    public void setRolesClaim(String rolesClaim) {
+      this.rolesClaim = rolesClaim;
+    }
+
+    public String getActionScopesClaim() {
+      return actionScopesClaim;
+    }
+
+    public void setActionScopesClaim(String actionScopesClaim) {
+      this.actionScopesClaim = actionScopesClaim;
+    }
+
+    public String getOperatorRole() {
+      return operatorRole;
+    }
+
+    public void setOperatorRole(String operatorRole) {
+      this.operatorRole = operatorRole;
+    }
+
+    public String getAdministratorRole() {
+      return administratorRole;
+    }
+
+    public void setAdministratorRole(String administratorRole) {
+      this.administratorRole = administratorRole;
     }
   }
 }

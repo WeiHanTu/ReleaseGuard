@@ -690,6 +690,8 @@ Required event types:
 - `RG-AUD-004`: A state-regressing event with a new ID MUST be quarantined and counted rather than silently applied.
 - `RG-AUD-005`: Deleting and rebuilding the projection from retained Kafka events MUST yield equivalent release and event views.
 - `RG-AUD-006`: Query responses MUST report projection freshness, including last Kafka offsets and projected-through time.
+- `RG-AUD-007`: A malformed Kafka envelope MUST be durably quarantined by topic, partition, and offset before its consumer offset advances; replaying that position MUST NOT duplicate the quarantine record.
+- `RG-AUD-008`: A PostgreSQL projection or quarantine failure MUST leave the Kafka record uncommitted for retry and MUST NOT be reclassified as a malformed envelope.
 
 ## 17. External REST API
 
@@ -811,6 +813,7 @@ releaseguard_event_projection_total{type,result}
 releaseguard_event_duplicate_total{type}
 releaseguard_projection_latency_seconds{type}
 releaseguard_projection_quarantine_total{reason}
+releaseguard_kafka_poison_records_total
 ```
 
 - `RG-OBS-001`: Metrics MUST avoid unbounded labels such as release UID, image digest, trace ID, or user identity.

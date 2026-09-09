@@ -75,6 +75,9 @@ public final class ReleasePlanReconciler implements Reconciler<ReleasePlan>, Cle
       // recording a failed release that is still serving.
       runtime.stopCandidateTraffic(resource, context);
     }
+    if (plan.requestAbort()) {
+      runtime.requestAbort(resource, context);
+    }
     if (plan.hasDesiredResources()) {
       runtime.apply(plan.desiredResources(), context);
       runtime.pruneSupersededTemplates(resource, context);

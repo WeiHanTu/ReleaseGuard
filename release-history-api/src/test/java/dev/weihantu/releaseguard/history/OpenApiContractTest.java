@@ -68,6 +68,28 @@ class OpenApiContractTest {
     assertNotNull(components, "Must specify components");
 
     @SuppressWarnings("unchecked")
+    Map<String, Object> securitySchemes = (Map<String, Object>) components.get("securitySchemes");
+    assertNotNull(securitySchemes, "Mutations must define authenticated identity");
+    assertTrue(securitySchemes.containsKey("bearerAuth"), "Must define OIDC bearer JWT auth");
+
+    for (String path :
+        Set.of(
+            "/v1/releases/{namespace}/{name}:pause",
+            "/v1/releases/{namespace}/{name}:promote",
+            "/v1/releases/{namespace}/{name}:abort",
+            "/v1/releases/{namespace}/{name}:retryAnalysis")) {
+      @SuppressWarnings("unchecked")
+      Map<String, Object> operation = (Map<String, Object>) paths.get(path);
+      @SuppressWarnings("unchecked")
+      Map<String, Object> post = (Map<String, Object>) operation.get("post");
+      assertTrue(post.containsKey("security"), "Mutation must require bearerAuth: " + path);
+      @SuppressWarnings("unchecked")
+      Map<String, Object> responses = (Map<String, Object>) post.get("responses");
+      assertTrue(responses.containsKey("401"), "Mutation must document authentication: " + path);
+      assertTrue(responses.containsKey("403"), "Mutation must document authorization: " + path);
+    }
+
+    @SuppressWarnings("unchecked")
     Map<String, Object> schemas = (Map<String, Object>) components.get("schemas");
     assertNotNull(schemas, "Must specify schemas");
 

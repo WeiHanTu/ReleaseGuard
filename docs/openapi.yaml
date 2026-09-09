@@ -146,11 +146,12 @@ paths:
     post:
       summary: Create a Pause action
       operationId: pauseRelease
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/NamespacePath'
         - $ref: '#/components/parameters/NamePath'
         - $ref: '#/components/parameters/IdempotencyKeyHeader'
-        - $ref: '#/components/parameters/ActorIdentityHeader'
       requestBody:
         required: false
         content:
@@ -168,18 +169,23 @@ paths:
           $ref: '#/components/responses/BadRequestError'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableError'
 
   /v1/releases/{namespace}/{name}:promote:
     post:
       summary: Create a Promote action
       operationId: promoteRelease
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/NamespacePath'
         - $ref: '#/components/parameters/NamePath'
         - $ref: '#/components/parameters/IdempotencyKeyHeader'
-        - $ref: '#/components/parameters/ActorIdentityHeader'
       requestBody:
         required: false
         content:
@@ -197,18 +203,23 @@ paths:
           $ref: '#/components/responses/BadRequestError'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableError'
 
   /v1/releases/{namespace}/{name}:abort:
     post:
       summary: Create an Abort action
       operationId: abortRelease
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/NamespacePath'
         - $ref: '#/components/parameters/NamePath'
         - $ref: '#/components/parameters/IdempotencyKeyHeader'
-        - $ref: '#/components/parameters/ActorIdentityHeader'
       requestBody:
         required: false
         content:
@@ -226,18 +237,23 @@ paths:
           $ref: '#/components/responses/BadRequestError'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableError'
 
   /v1/releases/{namespace}/{name}:retryAnalysis:
     post:
       summary: Create a RetryAnalysis action
       operationId: retryAnalysisRelease
+      security:
+        - bearerAuth: []
       parameters:
         - $ref: '#/components/parameters/NamespacePath'
         - $ref: '#/components/parameters/NamePath'
         - $ref: '#/components/parameters/IdempotencyKeyHeader'
-        - $ref: '#/components/parameters/ActorIdentityHeader'
       requestBody:
         required: false
         content:
@@ -255,8 +271,12 @@ paths:
           $ref: '#/components/responses/BadRequestError'
         '401':
           $ref: '#/components/responses/UnauthorizedError'
+        '403':
+          $ref: '#/components/responses/ForbiddenError'
         '404':
           $ref: '#/components/responses/NotFoundError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailableError'
 
   /livez:
     get:
@@ -307,6 +327,15 @@ paths:
                     example: UNHEALTHY
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        OIDC-issued bearer token. The verified subject is recorded as the actor. Action
+        mutations require the developer-operator role plus an exact namespace/application or
+        namespace/* entry in releaseguard_actions; platform-administrator bypasses target scope.
   parameters:
     NamespacePath:
       name: namespace
@@ -327,14 +356,6 @@ components:
       schema:
         type: string
       description: Unique idempotency key identifying mutating operation
-    ActorIdentityHeader:
-      name: X-Actor-Identity
-      in: header
-      required: false
-      schema:
-        type: string
-      description: Authenticated actor identity
-
   schemas:
     ApiError:
       type: object
@@ -691,8 +712,22 @@ components:
           schema:
             $ref: '#/components/schemas/ApiError'
 
+    ForbiddenError:
+      description: Authenticated identity lacks the required role or release scope
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
     NotFoundError:
       description: Release not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+    ServiceUnavailableError:
+      description: Required control-plane dependency is unavailable
       content:
         application/json:
           schema:

@@ -29,6 +29,13 @@ management:
 
 releaseguard:
   history:
+    auth:
+      issuer-uri: ${RELEASEGUARD_AUTH_ISSUER_URI:}
+      jwk-set-uri: ${RELEASEGUARD_AUTH_JWK_SET_URI:}
+      roles-claim: ${RELEASEGUARD_AUTH_ROLES_CLAIM:roles}
+      action-scopes-claim: ${RELEASEGUARD_AUTH_ACTION_SCOPES_CLAIM:releaseguard_actions}
+      operator-role: ${RELEASEGUARD_AUTH_OPERATOR_ROLE:developer-operator}
+      administrator-role: ${RELEASEGUARD_AUTH_ADMINISTRATOR_ROLE:platform-administrator}
     kafka:
       enabled: ${RELEASEGUARD_KAFKA_ENABLED:false}
       bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:${RELEASEGUARD_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}}

@@ -6,12 +6,17 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.weihantu.releaseguard.api.v1alpha1.EventEnvelope;
+import dev.weihantu.releaseguard.api.v1alpha1.ReleaseEvent;
+import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlan;
+import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanStatus;
 import dev.weihantu.releaseguard.history.projection.AuditProjectionService;
 import dev.weihantu.releaseguard.history.projection.ProjectionFreshness;
 import dev.weihantu.releaseguard.history.projection.ProjectionResult;
 import dev.weihantu.releaseguard.history.repository.AuditRepository;
 import dev.weihantu.releaseguard.history.repository.EventRecord;
 import dev.weihantu.releaseguard.history.repository.ReleaseProjectionRecord;
+import dev.weihantu.releaseguard.operator.ReleaseEventRenderer;
+import io.fabric8.kubernetes.api.model.ObjectMetaBuilder;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Instant;
 import java.util.List;
@@ -36,6 +41,7 @@ class AuditProjectionServiceTest {
 
   @BeforeEach
   void cleanDatabase() {
+    jdbcTemplate.update("DELETE FROM kafka_poison_records");
     jdbcTemplate.update("DELETE FROM quarantined_events");
     jdbcTemplate.update("DELETE FROM events");
     jdbcTemplate.update("DELETE FROM releases");
@@ -73,11 +79,54 @@ class AuditProjectionServiceTest {
     assertEquals("uid-100", release.releaseUid());
     assertEquals("demo", release.namespace());
     assertEquals("checkout", release.name());
-    assertEquals("Bootstrapping", release.phase());
+    assertEquals("Succeeded", release.phase());
     assertEquals(1L, release.lastTransitionSequence());
     assertEquals("evt-001", release.lastEventId());
     assertEquals("release.bootstrapped", release.lastEventType());
     assertEquals(0, release.currentStep());
+  }
+
+  @Test
+  @DisplayName("Operator event payload projects without a producer-consumer schema translation")
+  void testProducerToProjectorContract() {
+    ReleasePlan plan = new ReleasePlan();
+    plan.setMetadata(
+        new ObjectMetaBuilder()
+            .withName("checkout")
+            .withNamespace("demo")
+            .withUid("uid-contract")
+            .withGeneration(7L)
+            .build());
+    ReleasePlanStatus.Transition transition =
+        new ReleasePlanStatus.Transition(
+            3L, "evt-contract-3", "release.bootstrapped", "2026-09-08T20:00:00Z");
+    ReleasePlanStatus status =
+        new ReleasePlanStatus(
+            7L,
+            "uid-contract:7",
+            ReleasePlanStatus.Phase.Succeeded,
+            2,
+            "checkout-candidate-hash",
+            null,
+            null,
+            new ReleasePlanStatus.GateDecision(
+                "Successful", "AnalysisRun/checkout-bootstrap-g7", "2026-09-08T19:59:59Z"),
+            transition,
+            0,
+            List.of());
+
+    ReleaseEvent produced = ReleaseEventRenderer.render(plan, transition, status);
+    EventEnvelope envelope = EventEnvelope.from(produced, plan);
+    ProjectionResult result = projectionService.project(envelope, "deployment-events.v1", 1, 33L);
+
+    assertEquals(ProjectionResult.Status.APPLIED, result.status());
+    ReleaseProjectionRecord projected =
+        auditRepository.findReleaseById("uid-contract:7").orElseThrow();
+    assertEquals("Succeeded", projected.phase());
+    assertEquals(2, projected.currentStep());
+    assertEquals("checkout-candidate-hash", projected.stableRevision());
+    assertEquals("Successful", projected.gateDecision());
+    assertEquals("AnalysisRun/checkout-bootstrap-g7", projected.gateEvidenceRef());
   }
 
   @Test
@@ -168,6 +217,35 @@ class AuditProjectionServiceTest {
 
     // Quarantined count must be 1
     assertEquals(1, auditRepository.countQuarantinedEvents("uid-200:1"));
+  }
+
+  @Test
+  @DisplayName("Malformed Kafka records are quarantined idempotently at their source offset")
+  void testMalformedKafkaRecordQuarantineIsIdempotent() {
+    boolean first =
+        projectionService.quarantineMalformedKafkaRecord(
+            "deployment-events.v1",
+            2,
+            81L,
+            "uid-malformed",
+            "{not-json",
+            new IllegalArgumentException("invalid envelope"));
+    boolean duplicate =
+        projectionService.quarantineMalformedKafkaRecord(
+            "deployment-events.v1",
+            2,
+            81L,
+            "uid-malformed",
+            "{not-json",
+            new IllegalArgumentException("invalid envelope"));
+
+    assertTrue(first);
+    assertFalse(duplicate);
+    assertEquals(
+        1L, jdbcTemplate.queryForObject("SELECT COUNT(*) FROM kafka_poison_records", Long.class));
+    assertEquals(81L, auditRepository.getCheckpoints("deployment-events.v1").get(2));
+    assertEquals(
+        1L, projectionService.getFreshness("deployment-events.v1").quarantinedEventsCount());
   }
 
   @Test

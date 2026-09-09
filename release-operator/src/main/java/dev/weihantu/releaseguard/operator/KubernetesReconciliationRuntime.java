@@ -1,5 +1,6 @@
 package dev.weihantu.releaseguard.operator;
 
+import dev.weihantu.releaseguard.api.v1alpha1.EventEnvelope;
 import dev.weihantu.releaseguard.api.v1alpha1.MetricPolicy;
 import dev.weihantu.releaseguard.api.v1alpha1.MetricPolicySpec;
 import dev.weihantu.releaseguard.api.v1alpha1.MetricPolicyStatus;
@@ -171,7 +172,7 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
               .getClient()
               .resources(ReleaseEvent.class)
               .inNamespace(namespace)
-              .withLabel("delivery.weihantu.dev/release-name", planName)
+              .withLabel(EventEnvelope.RELEASE_NAME_LABEL, planName)
               .list()
               .getItems();
       if (events == null || events.isEmpty()) {
@@ -184,8 +185,9 @@ final class KubernetesReconciliationRuntime implements ReconciliationRuntime {
                       e.getStatus() == null
                           || e.getStatus().phase() != ReleaseEventStatus.Phase.Published)
               .count();
-    } catch (Exception ignored) {
-      return 0;
+    } catch (RuntimeException exception) {
+      throw new IllegalStateException(
+          "Cannot verify pending outbox count for " + namespace + "/" + planName, exception);
     }
   }
 

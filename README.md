@@ -2,7 +2,7 @@
 
 ReleaseGuard is an implementation-in-progress GitOps progressive-delivery control plane for Kubernetes. Its target workflow lets developers describe a rollout declaratively, reconcile that desired state through a Java operator, evaluate canaries against Prometheus metrics, and retain an auditable deployment-event history in Kafka.
 
-> **Status:** Weeks 1-3, the deployable Week 4 metric-gate service, generation-scoped Argo AnalysisTemplate rendering, gate-driven canary steps, and gated bootstrap admission are implemented. A live gated rollout against real canary traffic and a running Prometheus server has not been executed, and rollback deadlines, operator actions, external audit services, and production operations are not implemented yet. No production-readiness claim is made.
+> **Status:** Weeks 1-5 and active-passive operator leader election are implemented, including the metric-gate service, gated Argo resources, durable Kafka outbox, PostgreSQL history API, and authenticated operational actions. A live metric-driven rollout against real canary traffic, automated failure drills, complete observability, GKE operation, and scale/soak benchmarks remain outstanding. No production-readiness claim is made.
 
 ## Implemented
 
@@ -37,6 +37,9 @@ ReleaseGuard is an implementation-in-progress GitOps progressive-delivery contro
 - A checksum-pinned Argo CD v3.5.2 installer, automated-sync Application, and committed `environments/local` desired-state path with pruning, retry, and self-healing enabled.
 - A self-contained Kind GitOps test that serves a disposable non-root Git remote, observes a second commit synchronize without an imperative deployment command, and verifies Argo CD restores unauthorized live drift. One local arm64 run observed 4-second Git synchronization and 3-second drift recovery; these are test observations, not production SLOs.
 - A checksum-pinned Kind test that exercises multi-generation status observation and both deletion policies against Argo Rollouts v1.9.1 and Kubernetes v1.35.0: it observes a real gated canary step holding 5% traffic as logical step 0, proves `Delete` holds its finalizer through an Argo outage, and proves `OrphanStable` remains ready without recreating canary resources after both controllers restart.
+- A durable `ReleaseEvent` outbox and idempotent Kafka publisher, plus a Spring Boot history API that projects versioned events transactionally into PostgreSQL, deduplicates event IDs, exposes freshness and gate evidence, and rebuilds its release view from retained events.
+- RSA-verified OIDC bearer authentication for operational actions, with subject-derived actor identity and role plus namespace/application scope authorization. Caller-controlled identity headers, invalid signatures, viewer mutations, and out-of-scope operator mutations are rejected.
+- An offset-keyed PostgreSQL poison-record quarantine that commits malformed envelopes without blocking later partition records while leaving valid records uncommitted when PostgreSQL projection fails. A Testcontainers test exercises the operator-produced envelope through real Kafka and PostgreSQL, poison recovery, and the database-failure retry boundary.
 - JUnit and jqwik contract tests, formatting checks, CRD freshness verification, wrapper validation, and dependency review.
 
 ## Build and verify

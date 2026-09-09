@@ -4,7 +4,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.weihantu.releaseguard.api.v1alpha1.EventEnvelope;
+import dev.weihantu.releaseguard.api.v1alpha1.ReleaseEvent;
+import dev.weihantu.releaseguard.api.v1alpha1.ReleaseEventStatus;
 import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlan;
+import dev.weihantu.releaseguard.api.v1alpha1.ReleasePlanStatus;
 import io.fabric8.kubeapitest.junit.EnableKubeAPIServer;
 import io.fabric8.kubernetes.api.model.EndpointsBuilder;
 import io.fabric8.kubernetes.api.model.GenericKubernetesResource;
@@ -88,6 +92,31 @@ class KubernetesReconciliationRuntimeIT {
           plural: analysisruns
           singular: analysisrun
           kind: AnalysisRun
+        versions:
+          - name: v1alpha1
+            served: true
+            storage: true
+            subresources:
+              status: {}
+            schema:
+              openAPIV3Schema:
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+      """;
+
+  private static final String RELEASE_EVENT_CRD =
+      """
+      apiVersion: apiextensions.k8s.io/v1
+      kind: CustomResourceDefinition
+      metadata:
+        name: releaseevents.delivery.weihantu.dev
+      spec:
+        group: delivery.weihantu.dev
+        scope: Namespaced
+        names:
+          plural: releaseevents
+          singular: releaseevent
+          kind: ReleaseEvent
         versions:
           - name: v1alpha1
             served: true
@@ -341,6 +370,56 @@ class KubernetesReconciliationRuntimeIT {
     assertTrue(client.apps().replicaSets().inNamespace(namespace).list().getItems().isEmpty());
   }
 
+  @Test
+  void pendingOutboxSurvivesReleasePlanCleanup() {
+    String namespace = "cleanup-pending-outbox";
+    ReleasePlan plan = prepareRelease(namespace, 18);
+    KubernetesReconciliationRuntime runtime = new KubernetesReconciliationRuntime();
+    Context<ReleasePlan> context = context(client);
+    ReleasePlanStatus.Transition transition =
+        new ReleasePlanStatus.Transition(
+            1L,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "rollback.started",
+            "2026-09-08T20:00:00Z");
+    ReleasePlanStatus status =
+        new ReleasePlanStatus(
+            18L,
+            plan.getMetadata().getUid() + ":18",
+            ReleasePlanStatus.Phase.RollingBack,
+            1,
+            "checkout-stable",
+            "checkout-canary",
+            null,
+            null,
+            transition,
+            1,
+            List.of());
+    ReleaseEvent pending = ReleaseEventRenderer.render(plan, transition, status);
+    client.resources(ReleaseEvent.class).inNamespace(namespace).resource(pending).create();
+
+    runtime.deleteManagedChildren(plan, context);
+
+    ReleaseEvent retained =
+        client
+            .resources(ReleaseEvent.class)
+            .inNamespace(namespace)
+            .withName(pending.getMetadata().getName())
+            .get();
+    assertTrue(retained != null, "pending outbox must not be deleted with managed children");
+    assertTrue(
+        retained.getStatus() == null
+            || retained.getStatus().phase() == ReleaseEventStatus.Phase.Pending,
+        "an event without published status remains pending");
+    assertTrue(
+        retained.getMetadata().getOwnerReferences() == null
+            || retained.getMetadata().getOwnerReferences().isEmpty(),
+        "pending outbox must not be garbage-collected with the ReleasePlan");
+    EventEnvelope envelopeAfterPlanDeletion = EventEnvelope.from(retained, null);
+    assertEquals("checkout", envelopeAfterPlanDeletion.releaseName());
+    assertEquals(OperatorTestFixtures.IMAGE, envelopeAfterPlanDeletion.imageDigest());
+  }
+
   @SuppressWarnings("unchecked")
   private static Context<ReleasePlan> context(KubernetesClient client) {
     return (Context<ReleasePlan>)
@@ -385,6 +464,10 @@ class KubernetesReconciliationRuntimeIT {
         .forEach(resource -> client.resource(resource).serverSideApply());
     client
         .load(new ByteArrayInputStream(ANALYSIS_RUN_CRD.getBytes(StandardCharsets.UTF_8)))
+        .items()
+        .forEach(resource -> client.resource(resource).serverSideApply());
+    client
+        .load(new ByteArrayInputStream(RELEASE_EVENT_CRD.getBytes(StandardCharsets.UTF_8)))
         .items()
         .forEach(resource -> client.resource(resource).serverSideApply());
   }

@@ -28,6 +28,10 @@ public interface AuditRepository {
 
   void insertQuarantinedEvent(QuarantinedEventRecord quarantined);
 
+  boolean kafkaPoisonRecordExists(String topic, int partition, long offset);
+
+  void insertKafkaPoisonRecord(KafkaPoisonRecord record);
+
   long countQuarantinedEvents(String releaseId);
 
   long countAllQuarantinedEvents();

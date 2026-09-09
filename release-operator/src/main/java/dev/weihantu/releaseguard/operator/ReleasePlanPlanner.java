@@ -179,22 +179,18 @@ public final class ReleasePlanPlanner {
       Map<String, MetricPolicySnapshot> acceptedPolicies,
       RolloutObservation observation) {
     ReleasePlanSpec spec = plan.getSpec();
-    int pendingOutbox =
-        observation.pendingOutboxEvents() > 0
-            ? observation.pendingOutboxEvents()
-            : (current != null && current.pendingOutboxEvents() != null
-                ? current.pendingOutboxEvents()
-                : 0);
-    Phase phase = projectedPhase(currentPhase, observation, spec, current, pendingOutbox);
-    phaseMachine.requireTransition(currentPhase, phase);
-    String stableRevision = current.stableRevision();
-    String canaryRevision = current.canaryRevision();
-    Integer currentStep = current.currentStep();
+    int pendingOutbox = observation.pendingOutboxEvents();
     RolloutObservation.StepAnalysis gate =
         currentPhase == Phase.Bootstrapping
             ? observation.bootstrapAnalysis()
             : observation.stepAnalysis();
     ReleasePlanStatus.GateDecision gateDecision = gateDecision(current, observation, gate);
+    Phase phase =
+        projectedPhase(currentPhase, observation, spec, current, gateDecision, pendingOutbox);
+    phaseMachine.requireTransition(currentPhase, phase);
+    String stableRevision = current.stableRevision();
+    String canaryRevision = current.canaryRevision();
+    Integer currentStep = current.currentStep();
     boolean auditBackpressure = pendingOutbox > maxPendingOutboxEvents;
     String reason;
     String message;
@@ -209,8 +205,14 @@ public final class ReleasePlanPlanner {
       stableRevision = qualifiedRevision(identity.name(), observation.stablePodHash());
       canaryRevision = candidateRevision(identity.name(), observation);
       currentStep = logicalStep(observation.currentStepIndex(), spec);
-      reason = observationReason(currentPhase, phase, observation, gateDecision, auditBackpressure);
+      reason =
+          observationReason(
+              currentPhase, phase, observation, spec, gateDecision, auditBackpressure);
       message = observationMessage(currentPhase, phase, observation, gateDecision, reason);
+      if ("PromotionRejectedWithoutGateEvidence".equals(reason)) {
+        stableRevision = current.stableRevision();
+        canaryRevision = qualifiedRevision(identity.name(), observation.currentPodHash());
+      }
     }
     if (currentPhase == Phase.Bootstrapping && phase == Phase.Succeeded) {
       // RG-BOOT-004: the admitted bootstrap candidate becomes the first stable revision.
@@ -242,7 +244,8 @@ public final class ReleasePlanPlanner {
         status,
         desiredResources(plan, acceptedPolicies, currentPhase, phase, observation, status),
         phase == Phase.RollingBack ? calculateRollbackRequeue(current, spec) : null,
-        currentPhase == Phase.Bootstrapping && phase == Phase.Failed);
+        currentPhase == Phase.Bootstrapping && phase == Phase.Failed,
+        "PromotionRejectedWithoutGateEvidence".equals(reason));
   }
 
   /**
@@ -309,6 +312,7 @@ public final class ReleasePlanPlanner {
       RolloutObservation observation,
       ReleasePlanSpec spec,
       ReleasePlanStatus current,
+      ReleasePlanStatus.GateDecision gateDecision,
       int pendingOutboxEvents) {
     if (!observation.present() || !observation.statusCurrent()) {
       return currentPhase;
@@ -353,7 +357,7 @@ public final class ReleasePlanPlanner {
       return Phase.Paused;
     }
     if (observation.promoted(ReleaseResourceRenderer.argoStepCount(spec))) {
-      return Phase.Succeeded;
+      return decided(gateDecision, "Successful") ? Phase.Succeeded : Phase.RollingBack;
     }
     return currentPhase;
   }
@@ -455,6 +459,7 @@ public final class ReleasePlanPlanner {
       Phase currentPhase,
       Phase phase,
       RolloutObservation observation,
+      ReleasePlanSpec spec,
       ReleasePlanStatus.GateDecision gateDecision,
       boolean auditBackpressure) {
     if (phase == Phase.Succeeded) {
@@ -487,6 +492,11 @@ public final class ReleasePlanPlanner {
     }
     if (phase == Phase.RolledBack) {
       return "StableTrafficRestored";
+    }
+    if (phase == Phase.RollingBack
+        && observation.promoted(ReleaseResourceRenderer.argoStepCount(spec))
+        && !decided(gateDecision, "Successful")) {
+      return "PromotionRejectedWithoutGateEvidence";
     }
     if (phase == Phase.RollingBack) {
       return failedGate(observation, gateDecision) ? "GateFailedRollback" : "RolloutAbortObserved";
@@ -539,6 +549,9 @@ public final class ReleasePlanPlanner {
       String reason) {
     if ("AuditBackpressure".equals(reason)) {
       return "Pending outbox events exceed configured bound; promotion paused";
+    }
+    if ("PromotionRejectedWithoutGateEvidence".equals(reason)) {
+      return "Full traffic was observed without a successful required gate; ReleaseGuard rejected promotion";
     }
     if (phase == Phase.Succeeded) {
       if (currentPhase == Phase.Bootstrapping) {
@@ -784,6 +797,7 @@ public final class ReleasePlanPlanner {
                     || phase == Phase.RollingBack
                     || "ArgoRolloutDegraded".equals(reason)
                     || "BootstrapGateInconclusive".equals(reason)
+                    || "PromotionRejectedWithoutGateEvidence".equals(reason)
                     || "AuditBackpressure".equals(reason)
                 ? "True"
                 : "False",
